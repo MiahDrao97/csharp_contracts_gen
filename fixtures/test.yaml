@@ -1,0 +1,191 @@
+asyncapi: 3.0.0
+info:
+  title: Batch OSKL - Eloqua
+  version: 1.0.0
+  description: Contract for sending messages to the Batching OSKL processor targeting Eloqua 📈
+defaultContentType: application/json
+channels:
+  PushEloquaStatus:
+    address: batch_oskl_eloqua_event
+    messages:
+      PushEloquaStatusMsg:
+        $ref: '#/components/messages/PushEloquaStatusMsg'
+    description: Topic for pushing order status updates to the Eloqua platform
+operations:
+  PushEloquaStatus:
+    action: send
+    channel:
+        $ref: '#/channels/PushEloquaStatus'
+    messages:
+      - $ref: '#/channels/PushEloquaStatus/messages/PushEloquaStatusMsg'
+components:
+  messages:
+    PushEloquaStatusMsg:
+      name: PushEloquaStatusMsg
+      title: Eloqua Batch Send Msg
+      summary: >-
+        Message for sending an order status event to Eloqua
+      contentType: application/json
+      bindings:
+        kafka:
+          key:
+            type: string
+            description: Represents the Order Request Id
+      payload:
+        $ref: '#/components/schemas/PushEloquaStatusEvent'
+  schemas:
+    PushEloquaStatusEvent:
+      type: object
+      description: Represents an order status event to be sent to Eloqua OSKL batcher for processing
+      properties:
+        ContactId:
+          type: string
+          description: Contact Id (maps back to the contact on the order status)
+        CredentialsRid:
+          type: integer
+          format: int32
+          description: Credential RID
+        DeliveredDateUtc:
+          type: integer
+          format: int64
+          description: Delivery Date in UTC (Unix Epoch representation)
+        OrderNumber:
+          type: string
+          description: Order Number (Must include the A/B prefix if an order, or it needs to represent the full Guid if the OrderRequestId)
+        OrderStatus:
+          type: string
+          description: Represents the new status
+        PflItemId:
+          type: integer
+          format: int64
+          description: Represents either the OD_MASTER Ordernumber or in the case of Aggregates, it is the TBH_RID
+        PfqRid:
+          type: integer
+          format: int64
+          description: PFQ_RID primary key value in PF_QueueMeta Table of PFLLink Database
+        ProductDescription:
+          type: string
+          description: Description of the product
+        ProductId:
+          type: integer
+          description: Product RID (from TO_Products Table)
+        ProductName:
+          type: string
+          description: Product Name
+        RequestId:
+          type: string
+          description: Order Request Id
+        ShippedDateUtc:
+          type: integer
+          format: int64
+          description: Date product was shipped in UTC (Unix Epoch representation)
+        StatusId:
+          type: string
+          description: The status group identifier associated with the individual Order Status
+          enum:
+            - Legacy
+            - NewOrderRequestReceived
+            - NewOrderRequestUpdated
+            - NewOrderRequestSubmitted
+            - OrderHeld
+            - OrderReleased
+            - NewOrderPlaced
+            - OrderStatusReceivedEntered
+            - OrderStatusReceivedProduction
+            - OrderStatusReceivedShipped
+            - OrderStatusReceivedDelivered
+            - OrderStatusReceivedUndeliverable
+            - OrderStatusReceivedPickedUp
+            - OrderStatusReceivedPendingApproval
+            - OrderStatusReceivedExternalService
+            - OrderStatusReceivedTerminated
+            - OrderStatusReceivedCancelled
+            - OrderStatusReceivedUnknown
+            - OrderStatusPostedEntered
+            - OrderStatusPostedProduction
+            - OrderStatusPostedShipped
+            - OrderStatusPostedDelivered
+            - OrderStatusPostedUndeliverable
+            - OrderStatusPostedPickedUp
+            - OrderStatusPostedPendingApproval
+            - OrderStatusPostedExternalService
+            - OrderStatusPostedTerminated
+            - OrderStatusPostedCancelled
+            - OrderStatusPostedUnknown
+            - VendorNewOrderRequestReceived
+            - VendorNewOrderRequestUpdated
+            - VendorNewOrderPlaced
+            - VendorOrderStatusReceivedEntered
+            - VendorOrderStatusReceivedProduction
+            - VendorOrderStatusReceivedShipped
+            - VendorOrderStatusReceivedDelivered
+            - VendorOrderStatusReceivedUndeliverable
+            - VendorOrderStatusReceivedPendingApproval
+            - VendorOrderStatusReceivedCancelled
+            - VendorOrderStatusReceivedUnknown
+            - FailedToPlaceOrder
+            - PostedFailedToPlaceOrder
+            - FailedToPostOrderStatusEntered
+            - FailedToPostOrderStatusProduction
+            - FailedToPostOrderStatusShipped
+            - FailedToPostOrderStatusDelivered
+            - FailedToPostOrderStatusUndeliverable
+            - FailedToPostOrderStatusPickedUp
+            - FailedToPostOrderStatusPendingApproval
+            - FailedToPostOrderStatusExternalService
+            - FailedToPostFailedToPlaceOrder
+            - FailedToPostOrderStatusTerminated
+            - FailedToPostOrderStatusCancelled
+            - FailedToPostOrderStatusUnknown
+        StatusMessage:
+          type: string
+          description: Status message that we actually post back to the Eloqua custom object
+        TrackingNumber:
+          type: string
+          description: Optional Shipment Tracking Number
+      required:
+        - ContactId
+        - CredentialsRid
+        - OrderNumber
+        - PfqRid
+        - RequestId
+        - StatusId
+        - OrderStatus
+    EloquaNotify:
+      type: object
+      description: Contract to notify Eloqua to move a contact to the next step of the campaign
+      properties:
+        QueueMetaId:
+          type: integer
+          format: int64
+          description: PFQ_RID
+        RequestId:
+          type: string
+          format: uuid
+          description: PFQ_RequestId
+        OrderNumber:
+          type: string
+          description: The PFL order number - this may be an aggregate or bundle/project number
+        InstanceId:
+          type: string
+          description: ID of the PFLLink step instance (also maps to MP_InstanceMeta through MPI_InstanceID)
+        ContactId:
+          type: string
+          description: ID of the contact to move
+        SuccessUri:
+          type: string
+          description: URI for success
+        FailureUri:
+          type: string
+          description: URI for failure
+        Success:
+          type: boolean
+          description: Whether or not to move to the next step (true) or to the failure step (false)
+        UserFriendlyFailureMessage:
+          type: string
+          description: Status message to post back in the event of failure
+      required:
+        - QueueMetaId
+        - RequestId
+        - InstanceId
+        - ContactId

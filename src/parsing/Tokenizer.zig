@@ -1,0 +1,433 @@
+const std = @import("std");
+const zul = @import("zul");
+const iter_z = @import("iter_z");
+const root = @import("root.zig");
+const Iter = iter_z.Iter;
+const Allocator = std.mem.Allocator;
+const ArenaAllocator = std.heap.ArenaAllocator;
+const LineIterator = zul.fs.LineIterator;
+const ArrayList = std.ArrayList;
+const StringHashMap = std.StringHashMap;
+const ParseConfig = root.ParseConfig;
+const testing = std.testing;
+const log = std.log;
+
+line_no: usize = 1,
+pos: usize = 0,
+config: ParseConfig,
+arena: *ArenaAllocator,
+parent_alloc: Allocator,
+
+pub const Tokenizer = @This();
+
+pub const Error = error{
+    InvalidSyntax,
+    UnterminatedQuotes,
+    EarlyLineTermination,
+    UnexpectedToken,
+    InvalidEscapeSequence,
+} || Allocator.Error;
+
+/// Token for the parser to intelligbly piece together what in the world we're doing
+pub const Token = union(enum) {
+    /// String token (basically a key or value)
+    string: []const u8,
+    /// Symbol, including newline and indents
+    syntax: SyntaxToken,
+    /// Comment (not parsable)
+    comment,
+    /// End of file
+    eof,
+
+    /// Expecting syntax for a specific token or return `error.UnexpectedToken`
+    pub fn expectSyntax(self: Token, syntax: SyntaxToken) error{UnexpectedToken}!void {
+        switch (self) {
+            .syntax => |s| {
+                if (s != syntax) {
+                    return error.UnexpectedToken;
+                }
+            },
+            else => return error.UnexpectedToken,
+        }
+    }
+
+    /// Get the string value of a token if it is a string
+    pub fn isString(self: Token) ?[]const u8 {
+        return switch (self) {
+            .string => |s| s,
+            else => null,
+        };
+    }
+};
+
+/// Various syntax tokens (symbols only, including newlines and indents)
+pub const SyntaxToken = enum {
+    /// :
+    colon,
+    /// -
+    dash,
+    /// new line character
+    newline,
+    /// indent, whether that is an explicit tab character or a series of spaces that equal our tab size (from `ParseConfig`)
+    indent,
+};
+
+/// In multi-line value blocks, how are newlines handled?
+const BlockStyle = enum {
+    /// Newlines are ommitted from the block (indicated by '>')
+    folded,
+    /// Newlines are included (indicated by '|')
+    literal,
+};
+
+/// In multi-line value blocks, how are trailing newlines handled?
+const ChompStyle = enum {
+    /// single newline at the end (indicated without any character processeding the '|' or '>')
+    clip,
+    /// no newlines at the end (indicidated by '-' after the '|' or '>')
+    strip,
+    /// all newlines are included at the end (indicated by '+' after the '|' or '>')
+    keep,
+};
+
+/// Which kind of quotes we're dealing with if the value is in quotes (this is relevant for escape sequences)
+const QuoteType = enum { single, double };
+
+/// Iterator for tokens, which includes helper methods.
+/// The EOF token is excludeed on `next()` and `peek()`, so the caller may assume that a null result on either of methods means EOF.
+pub const TokenIterator = struct {
+    inner: Iter(Token),
+
+    fn isParsableToken(token: Token) bool {
+        return switch (token) {
+            .eof, .comment => false,
+            else => true,
+        };
+    }
+
+    /// Next token (excludes EOF and comments)
+    pub fn next(self: *TokenIterator) ?Token {
+        return self.inner.any(isParsableToken, false);
+    }
+
+    /// Peek at the next token (excludes EOF and comments)
+    pub fn peek(self: *TokenIterator) ?Token {
+        return self.inner.any(isParsableToken, true);
+    }
+
+    /// Expect the next token to be a specific syntax symbol
+    pub fn expectSyntax(self: *TokenIterator, syntax: SyntaxToken) error{UnexpectedToken}!Token {
+        if (self.peek()) |tok| {
+            try tok.expectSyntax(syntax);
+            _ = self.next();
+            return tok;
+        }
+        return error.UnexpectedToken;
+    }
+
+    /// Expect a specific indent level
+    pub fn expectedIndentLevel(self: *TokenIterator, indents: usize) error{UnexpectedToken}!void {
+        var i: usize = 1;
+        while (i < indents) : (i += 1) {
+            _ = try self.expectSyntax(.indent);
+            if (i == indents) {
+                break;
+            }
+        }
+    }
+
+    /// De-initialize internal iterator, which results in this becoming empty
+    pub fn deinit(self: *TokenIterator) void {
+        self.inner.deinit();
+    }
+};
+
+/// Initialize wew tokenizer
+pub fn new(allocator: Allocator, config: ParseConfig) Allocator.Error!Tokenizer {
+    const arena: *ArenaAllocator = try allocator.create(ArenaAllocator);
+    arena.* = .init(allocator);
+
+    return Tokenizer{
+        .arena = arena,
+        .parent_alloc = allocator,
+        .config = config,
+    };
+}
+
+/// Tokenize, using zul's `LineIterator`.
+///
+/// NOTE : The returned tokens are owned by this tokenizer's arena.
+/// To free, call `deinit()` on this tokenizer.
+pub fn tokenize(self: *Tokenizer, iter: *LineIterator) Error![]Token {
+    var tokens: ArrayList(Token) = .init(self.arena.allocator());
+    var indent_level: usize = 0;
+    // because we're using an arena, don't worry about errdefer (we'll put that burden on the caller)
+
+    while (iter.next()) |next_line| {
+        defer self.line_no += 1;
+        const trimmed: []const u8 = std.mem.trim(next_line, " \t");
+        if (trimmed[0] == '#') {
+            try tokens.append(.comment);
+        } else {
+            if (try self.tokenizeLine(&tokens, next_line, &indent_level)) |block_value| {
+                try self.tokenizeBlock(iter, &tokens, block_value.@"0", block_value.@"1", indent_level);
+            }
+        }
+        // do we need to manually append a newline to our tokens list or does that happen in `tokenizeLine`?
+    }
+
+    try tokens.append(.eof);
+
+    return try tokens.toOwnedSlice();
+}
+
+fn tokenizeLine(
+    self: *Tokenizer,
+    tokens: *ArrayList(Token),
+    line: []const u8,
+    indent_level: *usize,
+) Error!?struct { BlockStyle, ChompStyle } {
+    var spaces: u8 = 0;
+    var word: ArrayList(u8) = try .initCapacity(self.arena.allocator(), line.len);
+    errdefer word.deinit();
+
+    // reset position to 0
+    defer self.pos = 0;
+
+    var lh_index: usize = 0;
+    for (line) |byte| {
+        defer {
+            lh_index += 1;
+            self.pos += 1;
+        }
+        switch (byte) {
+            ' ' => {
+                spaces += 1;
+                if (spaces == self.config.tab_size) {
+                    indent_level.* += 1;
+                    spaces = 0;
+                }
+            },
+            '\t' => indent_level.* += 1,
+            ':' => {
+                // append key and colon
+                try tokens.append(Token{ .string = try word.toOwnedSlice() });
+                try tokens.append(Token{ .syntax = .colon });
+                break;
+            },
+            else => {
+                if (!std.ascii.isAlphanumeric(byte)) {
+                    log.err("Encountered invalid character '{c}' on key name (LH-side of colon): Line {d}, pos {d}\n\t'{s}'", .{
+                        byte,
+                        self.line_no,
+                        self.pos,
+                        line,
+                    });
+                    return error.UnexpectedToken;
+                }
+                // shouldn't have OOM error since we initialized this capacity
+                word.append(byte) catch unreachable;
+            },
+        }
+    }
+
+    var iter: Iter(u8) = .from(line[lh_index..]);
+    // consume whitespace
+    const next: ?u8 = iter.any(std.ascii.isWhitespace, false);
+    // this scenario means that we have a "key: \n" situation, which is invalid
+    if (next == null) {
+        log.err("Encountered early line termination: Line {d}, pos {d}\n\t'{s}'", .{ self.line_no, self.pos, line });
+        return error.EarlyLineTermination;
+    }
+    // is this a multi-line value block or just a single line value?
+    switch (next.?) {
+        '|' => {
+            const block_tok: ?u8 = iter.any(std.ascii.isWhitespace, false);
+            if (block_tok) |tok| {
+                return switch (tok) {
+                    '+' => .{ BlockStyle.literal, ChompStyle.keep },
+                    '-' => .{ BlockStyle.literal, ChompStyle.strip },
+                    else => blk: {
+                        log.err("Enountered invalid character '{c}' following '|': Line {d}, pos {d}\n\t'{s}'", .{
+                            block_tok,
+                            self.line_no,
+                            self.pos,
+                            line,
+                        });
+                        break :blk error.UnexpectedToken;
+                    },
+                };
+            }
+            return .{ BlockStyle.literal, ChompStyle.clip };
+        },
+        '>' => {
+            const block_tok: ?u8 = iter.any(std.ascii.isWhitespace, false);
+            if (block_tok) |tok| {
+                return switch (tok) {
+                    '+' => .{ BlockStyle.folded, ChompStyle.keep },
+                    '-' => .{ BlockStyle.folded, ChompStyle.strip },
+                    else => blk: {
+                        log.err("Enountered invalid character '{c}' following '>': Line {d}, pos {d}\n\t'{s}'", .{
+                            block_tok,
+                            self.line_no,
+                            self.pos,
+                            line,
+                        });
+                        break :blk error.UnexpectedToken;
+                    },
+                };
+            }
+            return .{ BlockStyle.folded, ChompStyle.clip };
+        },
+        // parse normally
+        else => iter.scroll(-1),
+    }
+
+    // get the rest of the line
+    word = try .initCapacity(self.arena.allocator(), line.len);
+    var first: bool = true;
+    var quote_type: ?QuoteType = null;
+    var start_escape: bool = false;
+    while (iter.next()) |byte| {
+        if (first and byte == '\'') {
+            quote_type = .single;
+        } else if (first and byte == '"') {
+            quote_type = .double;
+        }
+
+        if (first) {
+            first = false;
+        }
+
+        if (quote_type != null and byte == '\\') {
+            if (start_escape) {
+                word.append('\\') catch unreachable;
+                start_escape = false;
+            } else {
+                start_escape = true;
+                continue;
+            }
+        }
+
+        if (start_escape) {
+            switch (byte) {
+                '"' => {
+                    switch (quote_type.?) {
+                        .single => {
+                            log.err("Invalid escape sequence: \\', line: {d}, pos: {d}", .{ self.line_no, self.pos });
+                            return error.InvalidEscapeSequence;
+                        },
+                        .double => word.append(byte) catch unreachable,
+                    }
+                },
+                '\'' => {
+                    switch (quote_type.?) {
+                        .single => word.append(byte) catch unreachable,
+                        .double => {
+                            log.err("Invalid escape sequence: \\\", line: {d}, pos: {d}", .{ self.line_no, self.pos });
+                            return error.InvalidEscapeSequence;
+                        },
+                    }
+                },
+                else => {
+                    log.err("Invalid escape sequence: \\{c}, line: {d}, pos: {d}", .{ byte, self.line_no, self.pos });
+                    return error.InvalidEscapeSequence;
+                },
+            }
+            start_escape = false;
+            continue;
+        }
+
+        word.append(byte) catch unreachable;
+    }
+
+    if (quote_type) |q| {
+        const last_char: u8 = word.getLast();
+        switch (q) {
+            .single => {
+                if (word.items.len == 1 or last_char != '\'') {
+                    log.err("Line not properly terminated. Expected single quote, but found {c}: line: {d}, pos: {d}", .{
+                        last_char,
+                        self.line_no,
+                        self.pos,
+                    });
+                    return error.UnterminatedQuotes;
+                }
+            },
+            .double => {
+                if (word.items.len == 1 or last_char != '"') {
+                    log.err("Line not properly terminated. Expected double quote, but found {c}: line: {d}, pos: {d}", .{
+                        last_char,
+                        self.line_no,
+                        self.pos,
+                    });
+                    return error.UnterminatedQuotes;
+                }
+            },
+        }
+    }
+
+    try tokens.append(Token{ .string = try word.toOwnedSlice() });
+    try tokens.append(Token{ .syntax = .newline });
+
+    return null;
+}
+
+/// Tokenize block values
+/// For reference: https://yaml-multiline.info/
+fn tokenizeBlock(
+    self: Tokenizer,
+    lines: *LineIterator,
+    tokens: *ArrayList(Token),
+    block_style: BlockStyle,
+    chomp_style: ChompStyle,
+    indent_level: usize,
+) Error!void {
+    _ = tokens.*;
+    _ = &indent_level;
+    var next_line: Iter(u8) = .from(try lines.next() orelse return);
+    var indent_count: usize = 0;
+    var space_count: usize = 0;
+    while (next_line.next()) |byte| {
+        switch (byte) {
+            ' ' => {
+                space_count += 1;
+                if (space_count == self.config.tab_size) {
+                    indent_count += 1;
+                    space_count = 0;
+                }
+            },
+            '\t' => indent_count += 1,
+            else => {
+                next_line.scroll(-1);
+                break;
+            },
+        }
+        if (indent_count >= indent_level) {
+            // we're parsing the value here
+            break;
+        }
+    }
+
+    switch (block_style) {
+        else => {}
+    }
+    switch (chomp_style) {
+        else => {}
+    }
+}
+
+/// The returned tokens are owned by this tokenizer's arena.
+/// Keep in mind that freeing this tokenizer's arena will result in the tokens being freed as well.
+pub fn deinit(self: Tokenizer) void {
+    const arena_ptr: *ArenaAllocator = self.arena;
+    const alloc: Allocator = self.parent_alloc;
+
+    self.arena.deinit();
+    alloc.destroy(arena_ptr);
+}
+
+test "tokenize" {
+    var tokenizer: Tokenizer = try .new(testing.allocator, .{});
+    defer tokenizer.deinit();
+}
