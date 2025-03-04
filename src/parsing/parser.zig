@@ -9,7 +9,7 @@ const Parsed = root.Parsed;
 const Node = root.Node;
 const Iter = iter_z.Iter;
 const Allocator = std.mem.Allocator;
-const StringArrayHashMap = std.StringArrayHashMap;
+const NodeMap = root.NodeMap;
 const ArrayList = std.ArrayList;
 
 pub const Error = error{ EOF, UnexpectedToken } || Allocator.Error;
@@ -29,7 +29,7 @@ pub fn parse(allocator: Allocator, tokens: []Token) Error!Parsed {
 
 fn parseObj(
     allocator: Allocator,
-    node: *StringArrayHashMap(Node),
+    node: *NodeMap,
     tokens: *TokenIterator,
     ext_key: ?[]const u8,
     indent_depth: usize,
@@ -46,10 +46,7 @@ fn parseObj(
                     return error.UnexpectedToken;
                 } else {
                     // key-value
-                    try node.put(
-                        try allocator.dupe(u8, key.?),
-                        Node{ .value = try allocator.dupe(u8, s) },
-                    );
+                    try node.put(key.?, Node{ .value = try allocator.dupe(u8, s) });
                     key = null;
                     colon_found = false;
                 }
@@ -69,7 +66,7 @@ fn parseObj(
 
 fn parseObjOrArray(
     allocator: Allocator,
-    node: *StringArrayHashMap(Node),
+    node: *NodeMap,
     tokens: *TokenIterator,
     key: []const u8,
     indent_depth: usize,
@@ -81,13 +78,13 @@ fn parseObjOrArray(
                 const nodes: []Node = try parseArray(allocator, tokens, indent_depth);
                 errdefer allocator.free(nodes);
 
-                try node.put(try allocator.dupe(u8, key), Node{ .arr = nodes });
+                try node.put(key, Node{ .arr = nodes });
             },
             .string => |s| {
-                var new_obj: StringArrayHashMap(Node) = .init(allocator);
+                var new_obj: NodeMap = .init(allocator);
 
                 try parseObj(allocator, &new_obj, tokens, s, indent_depth);
-                try node.put(try allocator.dupe(u8, key), Node{ .obj = new_obj });
+                try node.put(key, Node{ .obj = new_obj });
             },
             else => return error.UnexpectedToken,
         }

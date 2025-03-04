@@ -169,8 +169,27 @@ pub fn tokenize(self: *Tokenizer, iter: *LineIterator) Error![]Token {
         if (trimmed[0] == '#') {
             try tokens.append(.comment);
         } else {
-            if (try self.tokenizeLine(&tokens, next_line, &indent_level)) |block_value| {
-                try self.tokenizeBlock(iter, &tokens, block_value.@"0", block_value.@"1", indent_level);
+            var tokenize_next: []const u8 = next_line;
+            while (true) {
+                if (try self.tokenizeLine(&tokens, tokenize_next, &indent_level)) |block_value| {
+                    var out_next_line: ?[]const u8 = null;
+                    var word: ArrayList(u8) = .init(self.arena.allocator());
+                    try self.tokenizeBlock(
+                        iter,
+                        &word,
+                        block_value.@"0",
+                        block_value.@"1",
+                        indent_level,
+                        &out_next_line,
+                    );
+                    try tokens.append(Token{ .string = try word.toOwnedSlice() });
+                    if (out_next_line) |next| {
+                        tokenize_next = next;
+                        continue;
+                    }
+                    break;
+                }
+                break;
             }
         }
         // do we need to manually append a newline to our tokens list or does that happen in `tokenizeLine`?
@@ -378,17 +397,17 @@ fn tokenizeLine(
 fn tokenizeBlock(
     self: Tokenizer,
     lines: *LineIterator,
-    tokens: *ArrayList(Token),
+    value: *ArrayList(u8),
     block_style: BlockStyle,
     chomp_style: ChompStyle,
     indent_level: usize,
+    out_next_line: *?[]const u8,
 ) Error!void {
-    _ = tokens.*;
-    _ = &indent_level;
-    var next_line: Iter(u8) = .from(try lines.next() orelse return);
+    const next_line: []const u8 = try lines.next() orelse return;
+    var next_line_iter: Iter(u8) = .from(next_line);
     var indent_count: usize = 0;
     var space_count: usize = 0;
-    while (next_line.next()) |byte| {
+    while (next_line_iter.next()) |byte| {
         switch (byte) {
             ' ' => {
                 space_count += 1;
@@ -399,7 +418,7 @@ fn tokenizeBlock(
             },
             '\t' => indent_count += 1,
             else => {
-                next_line.scroll(-1);
+                next_line_iter.scroll(-1);
                 break;
             },
         }
@@ -408,13 +427,41 @@ fn tokenizeBlock(
             break;
         }
     }
+    if (indent_count < indent_level) {
+        // ope, we're on the next line now
+        out_next_line.* = next_line;
+        return;
+    }
 
     switch (block_style) {
-        else => {}
+        .folded => {
+            while (next_line_iter.next()) |byte| {
+                if (byte != '\n') {
+                    value.append(byte) catch unreachable;
+                }
+            }
+        },
+        .literal => {
+            while (next_line_iter.next()) |byte| {
+                value.appendSlice(byte) catch unreachable;
+            }
+        },
     }
     switch (chomp_style) {
-        else => {}
+        .clip => {
+            while (value.getLastOrNull() == '\n') {
+                _ = value.pop();
+            }
+            value.append('\n') catch unreachable;
+        },
+        .strip => {
+            while (value.getLastOrNull() == '\n') {
+                _ = value.pop();
+            }
+        },
+        .keep => {},
     }
+    try @call(.always_tail, tokenizeBlock, .{ self, lines, value, block_style, chomp_style, indent_level, out_next_line });
 }
 
 /// The returned tokens are owned by this tokenizer's arena.
