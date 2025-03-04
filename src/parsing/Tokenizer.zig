@@ -234,6 +234,10 @@ fn tokenizeLine(
                 try tokens.append(Token{ .syntax = .colon });
                 break;
             },
+            '-' => {
+                try tokens.append(Token{ .syntax = .dash });
+                break;
+            },
             else => {
                 if (!std.ascii.isAlphanumeric(byte)) {
                     log.err("Encountered invalid character '{c}' on key name (LH-side of colon): Line {d}, pos {d}\n\t'{s}'", .{
