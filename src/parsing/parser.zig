@@ -19,7 +19,7 @@ pub fn parse(allocator: Allocator, tokens: []Token) Error!Parsed {
     var parsed: Parsed = try .new(allocator);
     var iter = TokenIterator{ .inner = Iter(Token).from(tokens) };
 
-    parseObj(parsed.arena.allocator(), &parsed.root.asObj().?, &iter, null, 0) catch |err| switch (err) {
+    parseObj(parsed.arena.allocator(), parsed.root.asObj().?, &iter, null, 0) catch |err| switch (err) {
         error.EOF => {},
         else => return err,
     };

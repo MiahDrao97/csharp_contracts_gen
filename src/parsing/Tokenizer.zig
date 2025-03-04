@@ -26,6 +26,7 @@ pub const Error = error{
     EarlyLineTermination,
     UnexpectedToken,
     InvalidEscapeSequence,
+    ReadFileError,
 } || Allocator.Error;
 
 /// Token for the parser to intelligbly piece together what in the world we're doing
@@ -163,9 +164,9 @@ pub fn tokenize(self: *Tokenizer, iter: *LineIterator) Error![]Token {
     var indent_level: usize = 0;
     // because we're using an arena, don't worry about errdefer (we'll put that burden on the caller)
 
-    while (iter.next()) |next_line| {
+    while (iter.next() catch return error.ReadFileError) |next_line| {
         defer self.line_no += 1;
-        const trimmed: []const u8 = std.mem.trim(next_line, " \t");
+        const trimmed: []const u8 = std.mem.trim(u8, next_line, " \t");
         if (trimmed[0] == '#') {
             try tokens.append(.comment);
         } else {
@@ -272,7 +273,7 @@ fn tokenizeLine(
                     '-' => .{ BlockStyle.literal, ChompStyle.strip },
                     else => blk: {
                         log.err("Enountered invalid character '{c}' following '|': Line {d}, pos {d}\n\t'{s}'", .{
-                            block_tok,
+                            block_tok orelse 0,
                             self.line_no,
                             self.pos,
                             line,
@@ -291,7 +292,7 @@ fn tokenizeLine(
                     '-' => .{ BlockStyle.folded, ChompStyle.strip },
                     else => blk: {
                         log.err("Enountered invalid character '{c}' following '>': Line {d}, pos {d}\n\t'{s}'", .{
-                            block_tok,
+                            block_tok orelse 0,
                             self.line_no,
                             self.pos,
                             line,
@@ -407,7 +408,10 @@ fn tokenizeBlock(
     indent_level: usize,
     out_next_line: *?[]const u8,
 ) Error!void {
-    const next_line: []const u8 = try lines.next() orelse return;
+    const next_line: []const u8 = lines.next() catch |err| {
+        log.err("Failed to read next line: {s} -> {?}", .{ @errorName(err), @errorReturnTrace() });
+        return error.ReadFileError;
+    } orelse return;
     var next_line_iter: Iter(u8) = .from(next_line);
     var indent_count: usize = 0;
     var space_count: usize = 0;
@@ -447,7 +451,7 @@ fn tokenizeBlock(
         },
         .literal => {
             while (next_line_iter.next()) |byte| {
-                value.appendSlice(byte) catch unreachable;
+                value.append(byte) catch unreachable;
             }
         },
     }

@@ -14,7 +14,7 @@ pub const Tokenizer = @import("Tokenizer.zig");
 pub const parser = @import("parser.zig");
 pub const Token = Tokenizer.Token;
 
-pub const Error = error{InvalidFileExtension} || Tokenizer.Error || parser.Error;
+pub const Error = error{ InvalidFileExtension, ReadFileError } || Tokenizer.Error || parser.Error;
 
 /// Configuration on parsing
 pub const ParseConfig = struct {
@@ -32,7 +32,14 @@ pub fn parseYaml(allocator: Allocator, file_path: []const u8, config: ParseConfi
     defer tokenizer.deinit(); // this deinit() call will destroy the resulting tokens as well
 
     var out_buf: [4096]u8 = undefined;
-    var line_iter: LineIterator = try zul.fs.readLines(file_path, &out_buf, .{});
+    var line_iter: LineIterator = zul.fs.readLines(file_path, &out_buf, .{}) catch |err| {
+        std.log.err("Encountered error {s} while reading lines from file {s} -> {?}", .{
+            @errorName(err),
+            file_path,
+            @errorReturnTrace(),
+        });
+        return error.ReadFileError;
+    };
     defer line_iter.deinit();
 
     const tokens: []Token = try tokenizer.tokenize(&line_iter); // destroyed with the tokenizer
@@ -71,7 +78,7 @@ pub const Parsed = struct {
 /// A representation of a YAML node
 pub const Node = union(enum) {
     /// This node is an array of nodes
-    arr: []Node,
+    arr: []const Node,
     /// This node is an "object", containing other nodes
     obj: NodeMap,
     /// This node is a simple key-value structure
@@ -128,20 +135,20 @@ pub const Node = union(enum) {
     }
 
     /// If this is an object node, then return the corresponding `NodeMap`
-    pub fn asObj(self: Node) ?NodeMap {
-        return switch (self) {
-            .obj => |o| o,
+    pub fn asObj(self: *Node) ?*NodeMap {
+        return switch (self.*) {
+            .obj => |*o| o,
             else => null,
         };
     }
 
     /// Convert a node to either a string, structure, or slice/array
     /// Note that strings and arrays are duplicated and will need to be freed.
-    pub fn to(self: Node, comptime T: type, allocator: Allocator) Allocator.Error!?T {
+    pub fn projectTo(self: Node, comptime T: type, allocator: Allocator) Allocator.Error!?T {
         switch (@typeInfo(T)) {
             .@"struct" => |struct_info| {
                 switch (self) {
-                    .obj => |o| return try o.to(T, allocator),
+                    .obj => |o| return try o.projectTo(T, allocator),
                     .arr => |a| {
                         if (struct_info.is_tuple) {
                             var x: T = undefined;
@@ -150,8 +157,8 @@ pub const Node = union(enum) {
                                     break;
                                 }
                                 @field(x, field.name) = switch (@typeInfo(field.type)) {
-                                    .optional => try a[i].to(field.type, allocator),
-                                    else => try a[i].to(field.type, allocator).?,
+                                    .optional => try a[i].projectTo(field.type, allocator),
+                                    else => (try a[i].projectTo(field.type, allocator)).?,
                                 };
                             }
                             return x;
@@ -166,19 +173,21 @@ pub const Node = union(enum) {
                     .slice => {
                         switch (self) {
                             .value => |v| {
-                                return if (ptr.child == u8)
-                                    try allocator.dupe(u8, v)
-                                else
-                                    null;
+                                @compileLog("Value node type >> Slice type '" ++ @typeName(ptr.child) ++ "'");
+                                if (ptr.child == u8) {
+                                    @compileLog("Duplicating string value...");
+                                    return try allocator.dupe(u8, v);
+                                } else return null;
                             },
                             .arr => |a| {
                                 const ElemType = ptr.child;
+                                @compileLog("Array node type >> Slice type '" ++ @typeName(ElemType) ++ "'");
                                 const slice: []ElemType = try allocator.alloc(ElemType, a.len);
                                 errdefer allocator.free(slice);
                                 for (a, 0..) |node, i| {
                                     slice[i] = switch (@typeInfo(ElemType)) {
-                                        .optional => try node.to(ElemType, allocator),
-                                        else => try node.to(ElemType, allocator).?,
+                                        .optional => try node.projectTo(ElemType, allocator),
+                                        else => (try node.projectTo(ElemType, allocator)).?,
                                     };
                                 }
                                 return slice;
@@ -200,8 +209,8 @@ pub const Node = union(enum) {
                                 errdefer allocator.free(slice);
                                 for (a, 0..) |node, i| {
                                     slice[i] = switch (@typeInfo(ElemType)) {
-                                        .optional => try node.to(ElemType, allocator),
-                                        else => try node.to(ElemType, allocator).?,
+                                        .optional => try node.projectTo(ElemType, allocator),
+                                        else => (try node.projectTo(ElemType, allocator)).?,
                                     };
                                 }
                                 return slice.ptr;
@@ -223,8 +232,8 @@ pub const Node = union(enum) {
                         var arr: [array_info.len]ElemType = .{undefined} ** array_info.len;
                         for (a, 0..) |node, i| {
                             arr[i] = switch (@typeInfo(ElemType)) {
-                                .optional => try node.to(ElemType, allocator),
-                                else => try node.to(ElemType, allocator).?,
+                                .optional => try node.projectTo(ElemType, allocator),
+                                else => (try node.projectTo(ElemType, allocator)).?,
                             };
                         }
                         return arr;
@@ -281,20 +290,18 @@ pub const NodeMap = struct {
 
     /// Put a new node (overwrites previous entry if a collision occurs)
     pub fn put(self: *NodeMap, k: []const u8, v: Node) !void {
-        const next_idx: usize = self.keys_compressed.items.len;
         for (k) |byte| {
             try self.keys_compressed.append(byte);
         }
         try self.keys_compressed.append(0);
 
-        const next_key: u32 = std.hash.CityHash32.hash(k);
-        try self.value_map.put(next_key, .{ .node = v, .offset = next_idx });
+        const next_idx: usize = self.keys_compressed.items.len;
+        try self.value_map.put(hash(k), .{ .node = v, .offset = next_idx });
     }
 
     /// Get a node by its key, if it exists
     pub fn get(self: NodeMap, k: []const u8) ?Node {
-        const key: u32 = std.hash.CityHash32.hash(k);
-        if (self.value_map.get(key)) |node_value| {
+        if (self.value_map.get(hash(k))) |node_value| {
             return node_value.node;
         }
         return null;
@@ -302,55 +309,72 @@ pub const NodeMap = struct {
 
     /// Get an iterator for all key-value pairs in this map
     pub fn iter(self: *const NodeMap) Iterator {
-        return .{ .inner = self.value_map.iterator(), .map = self };
+        return .{ .inner = self.value_map.iterator(), .map = self.* };
+    }
+
+    fn hash(k: []const u8) u32 {
+        return std.hash.CityHash32.hash(k);
     }
 
     /// Convert to a structure
     /// Note that string and array fields are duplicated and will need to be freed.
-    pub fn to(self: NodeMap, comptime T: type, allocator: Allocator) Allocator.Error!?T {
+    pub fn projectTo(self: NodeMap, comptime T: type, allocator: Allocator) Allocator.Error!?T {
         switch (@typeInfo(T)) {
             .@"struct" => |struct_info| {
                 var x: T = undefined;
                 inline for (struct_info.fields) |field| {
                     const FieldType = field.type;
-                    if (self.get(mem.sliceTo(u8, 0, field.name))) |val| {
+                    @compileLog("Projecting for field '" ++ field.name ++ "', which is type: " ++ @typeName(FieldType));
+                    if (self.get(mem.sliceTo(field.name, 0))) |val| {
                         switch (val) {
-                            .obj => |o| @field(x, field.name) = switch (field.tye) {
-                                .optional => try o.to(FieldType),
-                                else => try o.to(FieldType).?,
+                            .obj => |o| {
+                                @compileLog("Node map field '" ++ field.name ++ "' projecting to object type.");
+                                @field(x, field.name) = switch (@typeInfo(FieldType)) {
+                                    .optional => try o.projectTo(FieldType, allocator),
+                                    else => (try o.projectTo(FieldType, allocator)).?,
+                                };
                             },
                             .value => |v| {
-                                switch (@typeInfo(field.type)) {
+                                switch (@typeInfo(FieldType)) {
                                     .pointer => |p| {
                                         if (p.child != u8) {
                                             return null;
                                         }
-                                        switch (p) {
-                                            .many => {},
+                                        switch (p.size) {
+                                            .slice => {},
                                             else => return null,
                                         }
                                     },
                                     else => return null,
                                 }
+                                @compileLog("Node map field '" ++ field.name ++ "' projecting to string type.");
                                 @field(x, field.name) = try allocator.dupe(u8, v);
                             },
                             .arr => |a| {
                                 switch (@typeInfo(FieldType)) {
-                                    .pointer => {},
+                                    .pointer => |p| {
+                                        switch (p.size) {
+                                            .slice => {},
+                                            else => return null,
+                                        }
+                                        const ElementType = p.child;
+                                        @compileLog("Node map field '" ++ field.name ++ "' projecting to slice type: " ++ @typeName(ElementType));
+                                        const slice: []ElementType = try allocator.alloc(ElementType, a.len);
+                                        errdefer allocator.free(slice);
+                                        for (a, 0..) |node, i| {
+                                            slice[i] = switch (@typeInfo(ElementType)) {
+                                                .optional => try node.projectTo(ElementType, allocator),
+                                                else => (try node.projectTo(ElementType, allocator)).?,
+                                            };
+                                        }
+                                        @field(x, field.name) = slice;
+                                    },
                                     else => return null,
-                                }
-                                const slice: []FieldType = try allocator.alloc(FieldType, a.len);
-                                errdefer allocator.free(slice);
-                                for (a, 0..) |node, i| {
-                                    @field(x, field.name)[i] = switch (field.type.pointer.child) {
-                                        .optional => try node.to(field.type.pointer.child, allocator),
-                                        else => try node.to(field.type.pointer.child, allocator).?,
-                                    };
                                 }
                             }
                         }
                     } else {
-                        switch (field.type) {
+                        switch (@typeInfo(field.type)) {
                             .optional => {
                                 // skip optional fields if we don't have a match
                             },
@@ -389,13 +413,47 @@ test "NodeMap" {
     const kvp = iter.next();
     try testing.expect(kvp != null);
     try testing.expectEqualStrings("key", kvp.?.@"0");
-    try testing.expectEqualStrings("value", kvp.@"1".?.value);
+    try testing.expectEqualStrings("value", kvp.?.@"1".value);
     try testing.expectEqual(null, iter.next());
 
     const X = struct {
         key: []const u8,
     };
-    const x: ?X = map.to(X);
+    const x: ?X = try map.projectTo(X, testing.allocator);
     try testing.expect(x != null);
     try testing.expectEqualStrings("value", x.?.key);
+}
+test "Node projectTo()" {
+    var obj: NodeMap = .init(testing.allocator);
+    defer obj.deinit();
+
+    try obj.put("static_field", Node{ .value = "static value" });
+    try obj.put("arr", Node{
+        .arr = &[_]Node{
+            .{ .value = "val_0" },
+            .{ .value = "val_1" },
+            .{ .value = "val_2" },
+        },
+    });
+    try obj.put("nested_obj", Node{ .obj = NodeMap.init(testing.allocator) });
+    var nested: NodeMap = obj.get("nested_obj").?.obj;
+    try nested.put("nested_value", Node{ .value = "nested value" });
+
+    const Schema = struct {
+        static_field: []const u8,
+        arr: []const []const u8,
+        nested_obj: struct {
+            nested_value: []const u8,
+        },
+    };
+    const x: ?Schema = try obj.projectTo(Schema, testing.allocator);
+    defer {
+        testing.allocator.free(x.?.static_field);
+        for (x.?.arr) |word| {
+            testing.allocator.free(word);
+        }
+        testing.allocator.free(x.?.nested_obj.nested_value);
+    }
+
+    try testing.expect(x != null);
 }
