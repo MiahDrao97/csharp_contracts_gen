@@ -1,3 +1,4 @@
+//! Tokenizer that reads each line of a file and produces a list of tokens
 const std = @import("std");
 const zul = @import("zul");
 const iter_z = @import("iter_z");
@@ -12,10 +13,15 @@ const ParseConfig = root.ParseConfig;
 const testing = std.testing;
 const log = std.log;
 
+/// Which line number we're on
 line_no: usize = 1,
+/// Which position on the line we're on (0-indexed)
 pos: usize = 0,
+/// Configuration for parsing
 config: ParseConfig,
+/// Arena allocator
 arena: *ArenaAllocator,
+/// Parent of the arena allocator
 parent_alloc: Allocator,
 
 pub const Tokenizer = @This();

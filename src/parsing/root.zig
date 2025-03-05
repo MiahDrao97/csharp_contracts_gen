@@ -7,7 +7,7 @@ const ArenaAllocator = std.heap.ArenaAllocator;
 const LineIterator = zul.fs.LineIterator;
 const ArrayList = std.ArrayList;
 const StringArrayHashMap = std.StringArrayHashMap;
-const AutoArrayHashMap = std.AutoArrayHashMap;
+const ArrayHashMap = std.ArrayHashMap;
 const panic = std.debug.panicExtra;
 
 pub const Tokenizer = @import("Tokenizer.zig");
@@ -246,26 +246,50 @@ pub const Node = union(enum) {
 /// Custom structure that represents an "object", where each member is a string key and a node value
 pub const NodeMap = struct {
     /// Literally all keys smooshed into a single dynamic byte array, separated by null characters.
-    keys_compressed: ArrayList(u8),
+    keys_packed: ArrayList(u8),
     /// Map of values, where the key is a u32 hash of the string-valued key to avoid allocations on copying the keys.
     /// Using CityHash32 as the hashing algo.
-    value_map: AutoArrayHashMap(u32, Value),
+    value_map: HashMap,
 
     const Value = struct {
+        /// The actual node that we care about
         node: Node,
+        /// The offset in `keys_compressed` that the key is stored (up to the next null byte)
         offset: usize,
     };
 
+    /// Just a u32 alias that represents a hash created from a string
+    const StringHash = enum(u32) {
+        _,
+
+        pub const Context = struct {
+            pub fn hash(_: Context, k: StringHash) u32 {
+                // this already repesents a hash, so just return the u32 value
+                return @intFromEnum(k);
+            }
+
+            pub fn eql(_: Context, a: StringHash, b: StringHash, _: usize) bool {
+                return a == b;
+            }
+        };
+
+        pub fn from(k: []const u8) StringHash {
+            return @enumFromInt(std.hash.CityHash32.hash(k));
+        }
+    };
+
+    const HashMap = ArrayHashMap(StringHash, Value, StringHash.Context, false);
+
     /// Iterator over the key-value pairs of the `NodeMap`
     pub const Iterator = struct {
-        inner: AutoArrayHashMap(u32, Value).Iterator,
+        inner: HashMap.Iterator,
         map: NodeMap,
 
         /// Get next key-value pair or null if at the end of the collection
         pub fn next(self: *Iterator) ?struct { []const u8, Node } {
-            const next_node_primitive: ?AutoArrayHashMap(u32, Value).Entry = self.inner.next();
+            const next_node_primitive: ?HashMap.Entry = self.inner.next();
             if (next_node_primitive) |n| {
-                const key: []const u8 = mem.sliceTo(self.map.keys_compressed.items[n.value_ptr.offset..], 0);
+                const key: []const u8 = mem.sliceTo(self.map.keys_packed.items[n.value_ptr.offset..], 0);
                 return .{ key, n.value_ptr.node };
             }
             return null;
@@ -277,29 +301,34 @@ pub const NodeMap = struct {
         }
     };
 
+    /// Simply an alias for `std.mem.SplitIterator(u8, .scalar)`.
+    /// The keys are essentially a `splitScalar()` call on our packed array-list of keys
+    pub const KeyIterator = std.mem.SplitIterator(u8, .scalar);
+
     /// Initialize this structure with an allocator
     pub fn init(allocator: Allocator) NodeMap {
         return .{
-            .keys_compressed = .init(allocator),
+            .keys_packed = .init(allocator),
             .value_map = .init(allocator),
         };
     }
 
     /// Put a new node (overwrites previous entry if a collision occurs)
     pub fn put(self: *NodeMap, k: []const u8, v: Node) !void {
-        const next_idx: usize = self.keys_compressed.items.len;
-        for (k) |byte| {
-            try self.keys_compressed.append(byte);
+        const next_idx: usize = self.keys_packed.items.len;
+        if (next_idx > 0) {
+            // insert our separator beforehand if we're not the first key
+            try self.keys_packed.append(0);
         }
-        try self.keys_compressed.append(0);
+        try self.keys_packed.appendSlice(k);
 
-        try self.value_map.put(hash(k), .{ .node = v, .offset = next_idx });
+        try self.value_map.put(StringHash.from(k), Value{ .node = v, .offset = next_idx });
     }
 
     /// Get a node by its key, if it exists
     pub fn get(self: NodeMap, k: []const u8) ?Node {
-        if (self.value_map.get(hash(k))) |node_value| {
-            return node_value.node;
+        if (self.value_map.get(StringHash.from(k))) |value| {
+            return value.node;
         }
         return null;
     }
@@ -309,8 +338,9 @@ pub const NodeMap = struct {
         return .{ .inner = self.value_map.iterator(), .map = self.* };
     }
 
-    fn hash(k: []const u8) u32 {
-        return std.hash.CityHash32.hash(k);
+    /// Iterator over all the keys in our map
+    pub fn keys(self: *const NodeMap) KeyIterator {
+        return std.mem.splitScalar(u8, self.keys_packed.items, 0);
     }
 
     /// Convert to a structure
@@ -383,7 +413,7 @@ pub const NodeMap = struct {
 
     /// Free memory owned by this map
     pub fn deinit(self: *NodeMap) void {
-        self.keys_compressed.deinit();
+        self.keys_packed.deinit();
         self.value_map.deinit();
         self.* = undefined;
     }
@@ -403,7 +433,7 @@ test "NodeMap" {
     try testing.expectEqualStrings("value", map.get("key").?.value);
 
     iter = map.iter();
-    const kvp = iter.next();
+    const kvp: ?struct { []const u8, Node } = iter.next();
     try testing.expect(kvp != null);
     try testing.expectEqualStrings("key", kvp.?.@"0");
     try testing.expectEqualStrings("value", kvp.?.@"1".value);
@@ -413,8 +443,8 @@ test "NodeMap" {
         key: []const u8,
     };
     const x: ?X = try map.projectTo(X, testing.allocator);
-    defer testing.allocator.free(x.?.key);
     try testing.expect(x != null);
+    defer testing.allocator.free(x.?.key);
     try testing.expectEqualStrings("value", x.?.key);
 }
 test "Node projectTo()" {
@@ -444,6 +474,7 @@ test "Node projectTo()" {
         },
     };
     const x: ?Schema = try obj.projectTo(Schema, testing.allocator);
+    try testing.expect(x != null);
     defer {
         testing.allocator.free(x.?.static_value);
         for (x.?.arr) |word| {
@@ -453,9 +484,8 @@ test "Node projectTo()" {
         testing.allocator.free(x.?.nested_object.nested_value);
     }
 
-    try testing.expect(x != null);
     try testing.expectEqualStrings("value", x.?.static_value);
-    var buf: [16]u8 = undefined;
+    var buf: [8]u8 = undefined;
     for (0..3) |i| {
         try testing.expectEqualStrings(
             std.fmt.bufPrint(&buf, "val_{d}", .{i}) catch unreachable,
@@ -463,4 +493,10 @@ test "Node projectTo()" {
         );
     }
     try testing.expectEqualStrings("nested", x.?.nested_object.nested_value);
+
+    var key_iter: NodeMap.KeyIterator = obj.keys();
+    try testing.expectEqualStrings("static_value", key_iter.next().?);
+    try testing.expectEqualStrings("arr", key_iter.next().?);
+    try testing.expectEqualStrings("nested_object", key_iter.next().?);
+    try testing.expectEqual(null, key_iter.next());
 }
