@@ -135,7 +135,7 @@ pub const Node = union(enum) {
     }
 
     /// If this is an object node, then return the corresponding `NodeMap`
-    pub fn asObj(self: *Node) ?*NodeMap {
+    pub fn asObjPtr(self: *Node) ?*NodeMap {
         return switch (self.*) {
             .obj => |*o| o,
             else => null,
@@ -315,10 +315,11 @@ pub const NodeMap = struct {
 
     /// Put a new node (overwrites previous entry if a collision occurs)
     pub fn put(self: *NodeMap, k: []const u8, v: Node) !void {
-        const next_idx: usize = self.keys_packed.items.len;
+        var next_idx: usize = self.keys_packed.items.len;
         if (next_idx > 0) {
             // insert our separator beforehand if we're not the first key
             try self.keys_packed.append(0);
+            next_idx += 1;
         }
         try self.keys_packed.appendSlice(k);
 
@@ -494,6 +495,24 @@ test "Node projectTo()" {
     }
     try testing.expectEqualStrings("nested", x.?.nested_object.nested_value);
 
+    // check iterator
+    var iter: NodeMap.Iterator = obj.iter();
+    var next: ?struct { []const u8, Node } = null;
+
+    next = iter.next();
+    try testing.expectEqualStrings("static_value", next.?.@"0");
+    try testing.expectEqualStrings("value", next.?.@"1".value);
+
+    next = iter.next();
+    try testing.expectEqualStrings("arr", next.?.@"0");
+
+    next = iter.next();
+    try testing.expectEqualStrings("nested_object", next.?.@"0");
+
+    next = iter.next();
+    try testing.expectEqual(null, next);
+
+    // check keys()
     var key_iter: NodeMap.KeyIterator = obj.keys();
     try testing.expectEqualStrings("static_value", key_iter.next().?);
     try testing.expectEqualStrings("arr", key_iter.next().?);
