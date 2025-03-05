@@ -173,15 +173,12 @@ pub const Node = union(enum) {
                     .slice => {
                         switch (self) {
                             .value => |v| {
-                                @compileLog("Value node type >> Slice type '" ++ @typeName(ptr.child) ++ "'");
                                 if (ptr.child == u8) {
-                                    @compileLog("Duplicating string value...");
                                     return try allocator.dupe(u8, v);
                                 } else return null;
                             },
                             .arr => |a| {
                                 const ElemType = ptr.child;
-                                @compileLog("Array node type >> Slice type '" ++ @typeName(ElemType) ++ "'");
                                 const slice: []ElemType = try allocator.alloc(ElemType, a.len);
                                 errdefer allocator.free(slice);
                                 for (a, 0..) |node, i| {
@@ -218,7 +215,7 @@ pub const Node = union(enum) {
                             else => return null,
                         }
                     },
-                    else => @compileError("Expected struct, slice, or array type. Found " ++ @typeName(T)),
+                    else => return null,
                 }
             },
             .array => |array_info| {
@@ -241,7 +238,7 @@ pub const Node = union(enum) {
                     else => return null,
                 }
             },
-            else => @compileError("Expected struct, slice, or array type. Found " ++ @typeName(T)),
+            else => return null,
         }
     }
 };
@@ -290,12 +287,12 @@ pub const NodeMap = struct {
 
     /// Put a new node (overwrites previous entry if a collision occurs)
     pub fn put(self: *NodeMap, k: []const u8, v: Node) !void {
+        const next_idx: usize = self.keys_compressed.items.len;
         for (k) |byte| {
             try self.keys_compressed.append(byte);
         }
         try self.keys_compressed.append(0);
 
-        const next_idx: usize = self.keys_compressed.items.len;
         try self.value_map.put(hash(k), .{ .node = v, .offset = next_idx });
     }
 
@@ -324,11 +321,9 @@ pub const NodeMap = struct {
                 var x: T = undefined;
                 inline for (struct_info.fields) |field| {
                     const FieldType = field.type;
-                    @compileLog("Projecting for field '" ++ field.name ++ "', which is type: " ++ @typeName(FieldType));
                     if (self.get(mem.sliceTo(field.name, 0))) |val| {
                         switch (val) {
                             .obj => |o| {
-                                @compileLog("Node map field '" ++ field.name ++ "' projecting to object type.");
                                 @field(x, field.name) = switch (@typeInfo(FieldType)) {
                                     .optional => try o.projectTo(FieldType, allocator),
                                     else => (try o.projectTo(FieldType, allocator)).?,
@@ -347,7 +342,6 @@ pub const NodeMap = struct {
                                     },
                                     else => return null,
                                 }
-                                @compileLog("Node map field '" ++ field.name ++ "' projecting to string type.");
                                 @field(x, field.name) = try allocator.dupe(u8, v);
                             },
                             .arr => |a| {
@@ -358,7 +352,6 @@ pub const NodeMap = struct {
                                             else => return null,
                                         }
                                         const ElementType = p.child;
-                                        @compileLog("Node map field '" ++ field.name ++ "' projecting to slice type: " ++ @typeName(ElementType));
                                         const slice: []ElementType = try allocator.alloc(ElementType, a.len);
                                         errdefer allocator.free(slice);
                                         for (a, 0..) |node, i| {
@@ -384,7 +377,7 @@ pub const NodeMap = struct {
                 }
                 return x;
             },
-            else => @compileError("Expected struct type. Found " ++ @typeName(T)),
+            else => return null,
         }
     }
 
@@ -420,6 +413,7 @@ test "NodeMap" {
         key: []const u8,
     };
     const x: ?X = try map.projectTo(X, testing.allocator);
+    defer testing.allocator.free(x.?.key);
     try testing.expect(x != null);
     try testing.expectEqualStrings("value", x.?.key);
 }
@@ -427,7 +421,7 @@ test "Node projectTo()" {
     var obj: NodeMap = .init(testing.allocator);
     defer obj.deinit();
 
-    try obj.put("static_field", Node{ .value = "static value" });
+    try obj.put("static_value", Node{ .value = "value" });
     try obj.put("arr", Node{
         .arr = &[_]Node{
             .{ .value = "val_0" },
@@ -435,25 +429,38 @@ test "Node projectTo()" {
             .{ .value = "val_2" },
         },
     });
-    try obj.put("nested_obj", Node{ .obj = NodeMap.init(testing.allocator) });
-    var nested: NodeMap = obj.get("nested_obj").?.obj;
-    try nested.put("nested_value", Node{ .value = "nested value" });
+
+    var nested: NodeMap = .init(testing.allocator);
+    defer nested.deinit();
+
+    try nested.put("nested_value", Node{ .value = "nested" });
+    try obj.put("nested_object", Node{ .obj = nested });
 
     const Schema = struct {
-        static_field: []const u8,
+        static_value: []const u8,
         arr: []const []const u8,
-        nested_obj: struct {
+        nested_object: struct {
             nested_value: []const u8,
         },
     };
     const x: ?Schema = try obj.projectTo(Schema, testing.allocator);
     defer {
-        testing.allocator.free(x.?.static_field);
+        testing.allocator.free(x.?.static_value);
         for (x.?.arr) |word| {
             testing.allocator.free(word);
         }
-        testing.allocator.free(x.?.nested_obj.nested_value);
+        testing.allocator.free(x.?.arr);
+        testing.allocator.free(x.?.nested_object.nested_value);
     }
 
     try testing.expect(x != null);
+    try testing.expectEqualStrings("value", x.?.static_value);
+    var buf: [16]u8 = undefined;
+    for (0..3) |i| {
+        try testing.expectEqualStrings(
+            std.fmt.bufPrint(&buf, "val_{d}", .{i}) catch unreachable,
+            x.?.arr[i],
+        );
+    }
+    try testing.expectEqualStrings("nested", x.?.nested_object.nested_value);
 }
