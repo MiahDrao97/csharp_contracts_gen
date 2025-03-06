@@ -314,7 +314,7 @@ pub const NodeMap = struct {
     }
 
     /// Put a new node (overwrites previous entry if a collision occurs)
-    pub fn put(self: *NodeMap, k: []const u8, v: Node) !void {
+    pub fn put(self: *NodeMap, k: []const u8, v: Node) Allocator.Error!void {
         var next_idx: usize = self.keys_packed.items.len;
         if (next_idx > 0) {
             // insert our separator beforehand if we're not the first key
@@ -323,7 +323,10 @@ pub const NodeMap = struct {
         }
         try self.keys_packed.appendSlice(k);
 
-        try self.value_map.put(StringHash.from(k), Value{ .node = v, .offset = next_idx });
+        self.value_map.put(StringHash.from(k), Value{ .node = v, .offset = next_idx }) catch |err| switch (err) {
+            Allocator.Error.OutOfMemory => |oom| return oom,
+            else => unreachable,
+        };
     }
 
     /// Get a node by its key, if it exists
