@@ -1,4 +1,3 @@
-//! Tokenizer that reads each line of a file and produces a list of tokens
 const std = @import("std");
 const zul = @import("zul");
 const iter_z = @import("iter_z");
@@ -133,8 +132,8 @@ pub const TokenIterator = struct {
     }
 
     /// Expect a specific indent level
-    pub fn expectedIndentLevel(self: *TokenIterator, indents: usize) error{UnexpectedToken}!void {
-        var i: usize = 1;
+    pub fn expectedIndentLevel(self: *TokenIterator, indents: u16) error{UnexpectedToken}!void {
+        var i: u16 = 1;
         while (i < indents) : (i += 1) {
             _ = try self.expectSyntax(.indent);
             if (i == indents) {
@@ -167,10 +166,13 @@ pub fn new(allocator: Allocator, config: ParseConfig) Allocator.Error!Tokenizer 
 /// To free, call `deinit()` on this tokenizer.
 pub fn tokenize(self: *Tokenizer, iter: *LineIterator) Error![]Token {
     var tokens: ArrayList(Token) = .init(self.arena.allocator());
-    var indent_level: usize = 0;
+    var indent_level: u16 = 0;
     // because we're using an arena, don't worry about errdefer (we'll put that burden on the caller)
 
-    while (iter.next() catch return error.ReadFileError) |next_line| {
+    while (iter.next() catch |err| {
+        log.err("Could not read next line ({d}): {s} -> {?}", .{ self.line_no, @errorName(err), @errorReturnTrace() });
+        return error.ReadFileError;
+    }) |next_line| {
         defer self.line_no += 1;
         const trimmed: []const u8 = std.mem.trim(u8, next_line, " \t");
         if (trimmed[0] == '#') {
@@ -211,7 +213,7 @@ fn tokenizeLine(
     self: *Tokenizer,
     tokens: *ArrayList(Token),
     line: []const u8,
-    indent_level: *usize,
+    indent_level: *u16,
 ) Error!?struct { BlockStyle, ChompStyle } {
     var spaces: u8 = 0;
     var word: ArrayList(u8) = try .initCapacity(self.arena.allocator(), line.len);
@@ -411,7 +413,7 @@ fn tokenizeBlock(
     value: *ArrayList(u8),
     block_style: BlockStyle,
     chomp_style: ChompStyle,
-    indent_level: usize,
+    indent_level: u16,
     out_next_line: *?[]const u8,
 ) Error!void {
     const next_line: []const u8 = lines.next() catch |err| {
@@ -419,8 +421,8 @@ fn tokenizeBlock(
         return error.ReadFileError;
     } orelse return;
     var next_line_iter: Iter(u8) = .from(next_line);
-    var indent_count: usize = 0;
-    var space_count: usize = 0;
+    var indent_count: u16 = 0;
+    var space_count: u16 = 0;
     while (next_line_iter.next()) |byte| {
         switch (byte) {
             ' ' => {
@@ -475,7 +477,19 @@ fn tokenizeBlock(
         },
         .keep => {},
     }
-    try @call(.always_tail, tokenizeBlock, .{ self, lines, value, block_style, chomp_style, indent_level, out_next_line });
+    try @call(
+        .always_tail,
+        tokenizeBlock,
+        .{
+            self,
+            lines,
+            value,
+            block_style,
+            chomp_style,
+            indent_level,
+            out_next_line,
+        },
+    );
 }
 
 /// The returned tokens are owned by this tokenizer's arena.
@@ -488,7 +502,18 @@ pub fn deinit(self: Tokenizer) void {
     alloc.destroy(arena_ptr);
 }
 
+// test cases needed:
+// Block values with all the various block/chomp styles
 test "tokenize" {
     var tokenizer: Tokenizer = try .new(testing.allocator, .{});
     defer tokenizer.deinit();
+
+    var out: [1024]u8 = undefined;
+    var line_iter: LineIterator = zul.fs.readLines("", &out, .{}) catch |err| {
+        log.err("Need a ready test fixture to open. Encountered error: {s} -> {?}", .{ @errorName(err), @errorReturnTrace() });
+        return;
+    };
+
+    const tokens: []Token = try tokenizer.tokenize(&line_iter);
+    _ = tokens.len;
 }

@@ -29,7 +29,7 @@ fn parseObj(
     node: *NodeMap,
     tokens: *TokenIterator,
     ext_key: ?[]const u8,
-    indent_depth: usize,
+    indent_depth: u16,
 ) Error!void {
     var key: ?[]const u8 = ext_key;
     var colon_found: bool = false;
@@ -43,7 +43,7 @@ fn parseObj(
                     return error.UnexpectedToken;
                 } else {
                     // key-value
-                    try node.put(key.?, Node{ .value = try allocator.dupe(u8, s) });
+                    try node.put(allocator, key.?, Node{ .value = try allocator.dupe(u8, s) });
                     key = null;
                     colon_found = false;
                 }
@@ -74,13 +74,13 @@ fn parseObjOrArray(
                 const nodes: []Node = try parseArray(allocator, tokens, indent_depth);
                 errdefer allocator.free(nodes);
 
-                try node.put(key, Node{ .arr = nodes });
+                try node.put(allocator, key, Node{ .arr = nodes });
             },
             .string => |s| {
                 var new_obj: NodeMap = .init(allocator);
 
                 try parseObj(allocator, &new_obj, tokens, s, indent_depth);
-                try node.put(key, Node{ .obj = new_obj });
+                try node.put(allocator, key, Node{ .obj = new_obj });
             },
             else => return error.UnexpectedToken,
         }

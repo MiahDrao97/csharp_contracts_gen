@@ -5,9 +5,8 @@ const testing = std.testing;
 const Allocator = mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
 const LineIterator = zul.fs.LineIterator;
-const ArrayList = std.ArrayList;
-const StringArrayHashMap = std.StringArrayHashMap;
-const ArrayHashMap = std.ArrayHashMap;
+const ArrayList = std.ArrayListUnmanaged;
+const ArrayHashMap = std.ArrayHashMapUnmanaged;
 const panic = std.debug.panicExtra;
 
 pub const Tokenizer = @import("Tokenizer.zig");
@@ -19,7 +18,7 @@ pub const Error = error{ InvalidFileExtension, ReadFileError } || Tokenizer.Erro
 /// Configuration on parsing
 pub const ParseConfig = struct {
     max_depth: usize = 1000,
-    tab_size: u8 = 2,
+    tab_size: u4 = 2,
 };
 
 /// Open a YAML file, parse it, and return `Parsed`
@@ -59,7 +58,7 @@ pub const Parsed = struct {
 
         return Parsed{
             // root node is always an object
-            .root = Node{ .obj = NodeMap.init(arena.allocator()) },
+            .root = Node{ .obj = .empty },
             .arena = arena,
             .parent_alloc = allocator,
         };
@@ -226,7 +225,7 @@ pub const Node = union(enum) {
                         }
 
                         const ElemType = array_info.child;
-                        var arr: [array_info.len]ElemType = .{undefined} ** array_info.len;
+                        var arr = [_]ElemType{undefined} ** array_info.len;
                         for (a, 0..) |node, i| {
                             arr[i] = switch (@typeInfo(ElemType)) {
                                 .optional => try node.projectTo(ElemType, allocator),
@@ -305,25 +304,22 @@ pub const NodeMap = struct {
     /// The keys are essentially a `splitScalar()` call on our packed array-list of keys
     pub const KeyIterator = std.mem.SplitIterator(u8, .scalar);
 
-    /// Initialize this structure with an allocator
-    pub fn init(allocator: Allocator) NodeMap {
-        return .{
-            .keys_packed = .init(allocator),
-            .value_map = .init(allocator),
-        };
-    }
+    pub const empty: NodeMap = .{
+        .keys_packed = .empty,
+        .value_map = .empty,
+    };
 
     /// Put a new node (overwrites previous entry if a collision occurs)
-    pub fn put(self: *NodeMap, k: []const u8, v: Node) Allocator.Error!void {
+    pub fn put(self: *NodeMap, allocator: Allocator, k: []const u8, v: Node) Allocator.Error!void {
         var next_idx: u32 = @intCast(self.keys_packed.items.len);
         if (next_idx > 0) {
             // insert our separator beforehand if we're not the first key
-            try self.keys_packed.append(0);
+            try self.keys_packed.append(allocator, 0);
             next_idx += 1;
         }
-        try self.keys_packed.appendSlice(k);
+        try self.keys_packed.appendSlice(allocator, k);
 
-        self.value_map.put(StringHash.from(k), Value{ .node = v, .offset = next_idx }) catch |err| switch (err) {
+        self.value_map.put(allocator, StringHash.from(k), Value{ .node = v, .offset = next_idx }) catch |err| switch (err) {
             Allocator.Error.OutOfMemory => |oom| return oom,
             else => unreachable,
         };
@@ -416,9 +412,9 @@ pub const NodeMap = struct {
     }
 
     /// Free memory owned by this map
-    pub fn deinit(self: *NodeMap) void {
-        self.keys_packed.deinit();
-        self.value_map.deinit();
+    pub fn deinit(self: *NodeMap, allocator: Allocator) void {
+        self.keys_packed.deinit(allocator);
+        self.value_map.deinit(allocator);
         self.* = undefined;
     }
 };
@@ -427,13 +423,13 @@ test {
     std.testing.refAllDecls(@This());
 }
 test "NodeMap" {
-    var map: NodeMap = .init(testing.allocator);
-    defer map.deinit();
+    var map: NodeMap = .empty;
+    defer map.deinit(testing.allocator);
 
     var iter: NodeMap.Iterator = map.iter();
     try testing.expectEqual(null, iter.next());
 
-    try map.put("key", Node{ .value = "value" });
+    try map.put(testing.allocator, "key", Node{ .value = "value" });
     try testing.expectEqualStrings("value", map.get("key").?.value);
 
     iter = map.iter();
@@ -452,11 +448,11 @@ test "NodeMap" {
     try testing.expectEqualStrings("value", x.?.key);
 }
 test "Node projectTo()" {
-    var obj: NodeMap = .init(testing.allocator);
-    defer obj.deinit();
+    var obj: NodeMap = .empty;
+    defer obj.deinit(testing.allocator);
 
-    try obj.put("static_value", Node{ .value = "value" });
-    try obj.put("arr", Node{
+    try obj.put(testing.allocator, "static_value", Node{ .value = "value" });
+    try obj.put(testing.allocator, "arr", Node{
         .arr = &[_]Node{
             .{ .value = "val_0" },
             .{ .value = "val_1" },
@@ -464,11 +460,11 @@ test "Node projectTo()" {
         },
     });
 
-    var nested: NodeMap = .init(testing.allocator);
-    defer nested.deinit();
+    var nested: NodeMap = .empty;
+    defer nested.deinit(testing.allocator);
 
-    try nested.put("nested_value", Node{ .value = "nested" });
-    try obj.put("nested_object", Node{ .obj = nested });
+    try nested.put(testing.allocator, "nested_value", Node{ .value = "nested" });
+    try obj.put(testing.allocator, "nested_object", Node{ .obj = nested });
 
     const Schema = struct {
         static_value: []const u8,
