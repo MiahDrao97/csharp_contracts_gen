@@ -254,8 +254,8 @@ pub const NodeMap = struct {
     const Value = struct {
         /// The actual node that we care about
         node: Node,
-        /// The offset in `keys_compressed` that the key is stored (up to the next null byte)
-        offset: usize,
+        /// The offset in `keys_packed` that the key is stored (up to the next null byte)
+        offset: u32,
     };
 
     /// Just a u32 alias that represents a hash created from a string
@@ -289,7 +289,7 @@ pub const NodeMap = struct {
         pub fn next(self: *Iterator) ?struct { []const u8, Node } {
             const next_node_primitive: ?HashMap.Entry = self.inner.next();
             if (next_node_primitive) |n| {
-                const key: []const u8 = mem.sliceTo(self.map.keys_packed.items[n.value_ptr.offset..], 0);
+                const key: []const u8 = mem.sliceTo(self.map.keys_packed.items[@as(usize, n.value_ptr.offset)..], 0);
                 return .{ key, n.value_ptr.node };
             }
             return null;
@@ -315,7 +315,7 @@ pub const NodeMap = struct {
 
     /// Put a new node (overwrites previous entry if a collision occurs)
     pub fn put(self: *NodeMap, k: []const u8, v: Node) Allocator.Error!void {
-        var next_idx: usize = self.keys_packed.items.len;
+        var next_idx: u32 = @intCast(self.keys_packed.items.len);
         if (next_idx > 0) {
             // insert our separator beforehand if we're not the first key
             try self.keys_packed.append(0);
