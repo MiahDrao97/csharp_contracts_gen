@@ -1,12 +1,13 @@
 const std = @import("std");
 const zul = @import("zul");
+const iter_z = @import("iter_z");
 const mem = std.mem;
 const testing = std.testing;
 const Allocator = mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
-const LineIterator = zul.fs.LineIterator;
 const ArrayList = std.ArrayListUnmanaged;
 const ArrayHashMap = std.ArrayHashMapUnmanaged;
+const Iter = iter_z.Iter;
 const panic = std.debug.panicExtra;
 
 pub const Tokenizer = @import("Tokenizer.zig");
@@ -31,13 +32,15 @@ pub fn parseYaml(allocator: Allocator, file_path: []const u8, config: ParseConfi
     defer tokenizer.deinit(); // this deinit() call will destroy the resulting tokens as well
 
     var out_buf: [4096]u8 = undefined;
-    var line_iter: LineIterator = zul.fs.readLines(file_path, &out_buf, .{}) catch |err| {
-        std.log.err("Encountered error {s} while reading lines from file {s} -> {?}", .{
-            @errorName(err),
-            file_path,
-            @errorReturnTrace(),
-        });
-        return error.ReadFileError;
+    var line_iter: LineIterator = .{
+        .live = zul.fs.readLines(file_path, &out_buf, .{}) catch |err| {
+            std.log.err("Encountered error {s} while reading lines from file {s} -> {?}", .{
+                @errorName(err),
+                file_path,
+                @errorReturnTrace(),
+            });
+            return error.ReadFileError;
+        },
     };
     defer line_iter.deinit();
 
@@ -518,3 +521,37 @@ test "Node projectTo()" {
     try testing.expectEqualStrings("nested_object", key_iter.next().?);
     try testing.expectEqual(null, key_iter.next());
 }
+
+pub const LineIterator = union(enum) {
+    live: zul.fs.LineIterator,
+    @"test": struct { allocator: Allocator, iter: Iter(u8) },
+
+    pub fn deinit(self: *LineIterator) void {
+        switch (self.*) {
+            .live => |l| l.deinit(),
+            .@"test" => |*t| t.iter.deinit(),
+        }
+    }
+
+    pub fn next(self: *LineIterator) !?[]const u8 {
+        switch (self.*) {
+            .live => |*l| return l.next(),
+            .@"test" => |*t| {
+                var line: ArrayList(u8) = .empty;
+                errdefer line.deinit(t.allocator);
+
+                while (t.iter.next()) |n| {
+                    if (n == '\n') {
+                        break;
+                    }
+                    try line.append(t.allocator, n);
+                }
+
+                if (line.items.len == 0) {
+                    return null;
+                }
+                return try line.toOwnedSlice(t.allocator);
+            }
+        }
+    }
+};

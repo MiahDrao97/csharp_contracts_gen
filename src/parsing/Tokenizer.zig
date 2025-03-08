@@ -5,9 +5,8 @@ const root = @import("root.zig");
 const Iter = iter_z.Iter;
 const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
-const LineIterator = zul.fs.LineIterator;
-const ArrayList = std.ArrayList;
-const StringHashMap = std.StringHashMap;
+const LineIterator = root.LineIterator;
+const ArrayList = std.ArrayListUnmanaged;
 const ParseConfig = root.ParseConfig;
 const testing = std.testing;
 const log = std.log;
@@ -64,7 +63,39 @@ pub const Token = union(enum) {
             else => null,
         };
     }
+
+    pub fn asString(self: Token) []const u8 {
+        return switch (self) {
+            .string => |str| str,
+            .syntax => |syn| switch (syn) {
+                .colon => ":",
+                .dash => "-",
+                .newline => "\\n",
+                .indent => "\\t",
+            },
+            .comment, .eof => "",
+        };
+    }
 };
+
+fn dumpTokens(allocator: Allocator, tokens: []Token) Allocator.Error!void {
+    var dump: ArrayList(u8) = .empty;
+    try dump.appendSlice(allocator, "Tokens: [ ");
+    defer dump.deinit(allocator);
+
+    var first: bool = true;
+    var buf: [256]u8 = undefined;
+    for (tokens) |tok| {
+        if (first) {
+            try dump.appendSlice(allocator, std.fmt.bufPrint(&buf, "{s}", .{tok.asString()}) catch unreachable);
+            first = false;
+        }
+        try dump.appendSlice(allocator, std.fmt.bufPrint(&buf, ", {s}", .{tok.asString()}) catch unreachable);
+    }
+    try dump.appendSlice(allocator, " ]");
+
+    std.debug.print("{s}", .{dump.items});
+}
 
 /// Various syntax tokens (symbols only, including newlines and indents)
 pub const SyntaxToken = enum {
@@ -98,6 +129,10 @@ const ChompStyle = enum {
 
 /// Which kind of quotes we're dealing with if the value is in quotes (this is relevant for escape sequences)
 const QuoteType = enum { single, double };
+
+fn isNonWhitespace(byte: u8) bool {
+    return !std.ascii.isWhitespace(byte);
+}
 
 /// Iterator for tokens, which includes helper methods.
 /// The EOF token is excludeed on `next()` and `peek()`, so the caller may assume that a null result on either of methods means EOF.
@@ -165,7 +200,7 @@ pub fn new(allocator: Allocator, config: ParseConfig) Allocator.Error!Tokenizer 
 /// NOTE : The returned tokens are owned by this tokenizer's arena.
 /// To free, call `deinit()` on this tokenizer.
 pub fn tokenize(self: *Tokenizer, iter: *LineIterator) Error![]Token {
-    var tokens: ArrayList(Token) = .init(self.arena.allocator());
+    var tokens: ArrayList(Token) = .empty;
     var indent_level: u16 = 0;
     // because we're using an arena, don't worry about errdefer (we'll put that burden on the caller)
 
@@ -176,13 +211,13 @@ pub fn tokenize(self: *Tokenizer, iter: *LineIterator) Error![]Token {
         defer self.line_no += 1;
         const trimmed: []const u8 = std.mem.trim(u8, next_line, " \t");
         if (trimmed[0] == '#') {
-            try tokens.append(.comment);
+            try tokens.append(self.arena.allocator(), .comment);
         } else {
             var tokenize_next: []const u8 = next_line;
             while (true) {
                 if (try self.tokenizeLine(&tokens, tokenize_next, &indent_level)) |block_value| {
                     var out_next_line: ?[]const u8 = null;
-                    var word: ArrayList(u8) = .init(self.arena.allocator());
+                    var word: ArrayList(u8) = .empty;
                     try self.tokenizeBlock(
                         iter,
                         &word,
@@ -191,7 +226,7 @@ pub fn tokenize(self: *Tokenizer, iter: *LineIterator) Error![]Token {
                         indent_level,
                         &out_next_line,
                     );
-                    try tokens.append(Token{ .string = try word.toOwnedSlice() });
+                    try tokens.append(self.arena.allocator(), Token{ .string = try word.toOwnedSlice(self.arena.allocator()) });
                     if (out_next_line) |next| {
                         tokenize_next = next;
                         continue;
@@ -203,10 +238,9 @@ pub fn tokenize(self: *Tokenizer, iter: *LineIterator) Error![]Token {
         }
         // do we need to manually append a newline to our tokens list or does that happen in `tokenizeLine`?
     }
+    try tokens.append(self.arena.allocator(), .eof);
 
-    try tokens.append(.eof);
-
-    return try tokens.toOwnedSlice();
+    return try tokens.toOwnedSlice(self.arena.allocator());
 }
 
 fn tokenizeLine(
@@ -217,7 +251,7 @@ fn tokenizeLine(
 ) Error!?struct { BlockStyle, ChompStyle } {
     var spaces: u8 = 0;
     var word: ArrayList(u8) = try .initCapacity(self.arena.allocator(), line.len);
-    errdefer word.deinit();
+    errdefer word.deinit(self.arena.allocator());
 
     // reset position to 0
     defer self.pos = 0;
@@ -239,12 +273,12 @@ fn tokenizeLine(
             '\t' => indent_level.* += 1,
             ':' => {
                 // append key and colon
-                try tokens.append(Token{ .string = try word.toOwnedSlice() });
-                try tokens.append(Token{ .syntax = .colon });
+                try tokens.append(self.arena.allocator(), Token{ .string = try word.toOwnedSlice(self.arena.allocator()) });
+                try tokens.append(self.arena.allocator(), Token{ .syntax = .colon });
                 break;
             },
             '-' => {
-                try tokens.append(Token{ .syntax = .dash });
+                try tokens.append(self.arena.allocator(), Token{ .syntax = .dash });
                 break;
             },
             else => {
@@ -258,14 +292,14 @@ fn tokenizeLine(
                     return error.UnexpectedToken;
                 }
                 // shouldn't have OOM error since we initialized this capacity
-                word.append(byte) catch unreachable;
+                word.append(self.arena.allocator(), byte) catch unreachable;
             },
         }
     }
 
     var iter: Iter(u8) = .from(line[lh_index..]);
     // consume whitespace
-    const next: ?u8 = iter.any(std.ascii.isWhitespace, false);
+    const next: ?u8 = iter.any(isNonWhitespace, false);
     // this scenario means that we have a "key: \n" situation, which is invalid
     if (next == null) {
         log.err("Encountered early line termination: Line {d}, pos {d}\n\t'{s}'", .{ self.line_no, self.pos, line });
@@ -333,7 +367,7 @@ fn tokenizeLine(
 
         if (quote_type != null and byte == '\\') {
             if (start_escape) {
-                word.append('\\') catch unreachable;
+                word.append(self.arena.allocator(), '\\') catch unreachable;
                 start_escape = false;
             } else {
                 start_escape = true;
@@ -349,12 +383,12 @@ fn tokenizeLine(
                             log.err("Invalid escape sequence: \\', line: {d}, pos: {d}", .{ self.line_no, self.pos });
                             return error.InvalidEscapeSequence;
                         },
-                        .double => word.append(byte) catch unreachable,
+                        .double => word.append(self.arena.allocator(), byte) catch unreachable,
                     }
                 },
                 '\'' => {
                     switch (quote_type.?) {
-                        .single => word.append(byte) catch unreachable,
+                        .single => word.append(self.arena.allocator(), byte) catch unreachable,
                         .double => {
                             log.err("Invalid escape sequence: \\\", line: {d}, pos: {d}", .{ self.line_no, self.pos });
                             return error.InvalidEscapeSequence;
@@ -370,7 +404,7 @@ fn tokenizeLine(
             continue;
         }
 
-        word.append(byte) catch unreachable;
+        word.append(self.arena.allocator(), byte) catch unreachable;
     }
 
     if (quote_type) |q| {
@@ -399,8 +433,8 @@ fn tokenizeLine(
         }
     }
 
-    try tokens.append(Token{ .string = try word.toOwnedSlice() });
-    try tokens.append(Token{ .syntax = .newline });
+    try tokens.append(self.arena.allocator(), Token{ .string = try word.toOwnedSlice(self.arena.allocator()) });
+    try tokens.append(self.arena.allocator(), Token{ .syntax = .newline });
 
     return null;
 }
@@ -438,10 +472,6 @@ fn tokenizeBlock(
                 break;
             },
         }
-        if (indent_count >= indent_level) {
-            // we're parsing the value here
-            break;
-        }
     }
     if (indent_count < indent_level) {
         // ope, we're on the next line now
@@ -453,13 +483,13 @@ fn tokenizeBlock(
         .folded => {
             while (next_line_iter.next()) |byte| {
                 if (byte != '\n') {
-                    value.append(byte) catch unreachable;
+                    value.append(self.arena.allocator(), byte) catch unreachable;
                 }
             }
         },
         .literal => {
             while (next_line_iter.next()) |byte| {
-                value.append(byte) catch unreachable;
+                value.append(self.arena.allocator(), byte) catch unreachable;
             }
         },
     }
@@ -468,7 +498,7 @@ fn tokenizeBlock(
             while (value.getLastOrNull() == '\n') {
                 _ = value.pop();
             }
-            value.append('\n') catch unreachable;
+            value.append(self.arena.allocator(), '\n') catch unreachable;
         },
         .strip => {
             while (value.getLastOrNull() == '\n') {
@@ -504,16 +534,31 @@ pub fn deinit(self: Tokenizer) void {
 
 // test cases needed:
 // Block values with all the various block/chomp styles
-test "tokenize" {
+test "tokenize literal block" {
     var tokenizer: Tokenizer = try .new(testing.allocator, .{});
     defer tokenizer.deinit();
 
-    var out: [1024]u8 = undefined;
-    var line_iter: LineIterator = zul.fs.readLines("", &out, .{}) catch |err| {
-        log.err("Need a ready test fixture to open. Encountered error: {s} -> {?}", .{ @errorName(err), @errorReturnTrace() });
-        return;
+    const yaml =
+        \\line: |
+        \\  This is a block literal
+        \\  yay
+        \\  another line
+        \\next_thing: wow
+    ;
+
+    var arena: ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+
+    var line_iter: LineIterator = .{
+        .@"test" = .{
+            .allocator = arena.allocator(),
+            .iter = .from(yaml),
+        },
     };
+    defer line_iter.deinit();
 
     const tokens: []Token = try tokenizer.tokenize(&line_iter);
-    _ = tokens.len;
+    try testing.expectEqual(4, tokens.len);
+
+    try dumpTokens(testing.allocator, tokens);
 }
