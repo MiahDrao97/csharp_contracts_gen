@@ -246,6 +246,7 @@ pub fn tokenize(self: *Tokenizer, iter: *LineIterator) Error![]Token {
                     if (out_next_line) |next| {
                         log.debug("Encountered next line while tokenizing block-->{s}", .{next});
                         tokenize_next = next;
+                        indent_level -= 1;
                         continue;
                     }
                     break;
