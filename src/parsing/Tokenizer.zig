@@ -73,15 +73,19 @@ pub const Token = union(enum) {
                 .newline => "\\n",
                 .indent => "\\t",
             },
-            .comment, .eof => "",
+            .comment => "#comment",
+            .eof => "<EOF>",
         };
     }
 };
 
 fn dumpTokens(allocator: Allocator, tokens: []Token) Allocator.Error!void {
+    if (!log.defaultLogEnabled(.debug)) {
+        return;
+    }
     var dump: ArrayList(u8) = .empty;
-    try dump.appendSlice(allocator, "Tokens: [ ");
     defer dump.deinit(allocator);
+    try dump.appendSlice(allocator, "Tokens: [ ");
 
     var first: bool = true;
     var buf: [256]u8 = undefined;
@@ -89,12 +93,13 @@ fn dumpTokens(allocator: Allocator, tokens: []Token) Allocator.Error!void {
         if (first) {
             try dump.appendSlice(allocator, std.fmt.bufPrint(&buf, "{s}", .{tok.asString()}) catch unreachable);
             first = false;
+        } else {
+            try dump.appendSlice(allocator, std.fmt.bufPrint(&buf, ", {s}", .{tok.asString()}) catch unreachable);
         }
-        try dump.appendSlice(allocator, std.fmt.bufPrint(&buf, ", {s}", .{tok.asString()}) catch unreachable);
     }
     try dump.appendSlice(allocator, " ]");
 
-    std.debug.print("{s}", .{dump.items});
+    log.debug("{s}\n", .{dump.items});
 }
 
 /// Various syntax tokens (symbols only, including newlines and indents)
@@ -204,17 +209,22 @@ pub fn tokenize(self: *Tokenizer, iter: *LineIterator) Error![]Token {
     var indent_level: u16 = 0;
     // because we're using an arena, don't worry about errdefer (we'll put that burden on the caller)
 
+    // zig fmt: off
     while (iter.next() catch |err| {
         log.err("Could not read next line ({d}): {s} -> {?}", .{ self.line_no, @errorName(err), @errorReturnTrace() });
         return error.ReadFileError;
-    }) |next_line| {
-        defer self.line_no += 1;
+    })
+
+    |next_line| {
+        // zig fmt: on
         const trimmed: []const u8 = std.mem.trim(u8, next_line, " \t");
         if (trimmed[0] == '#') {
             try tokens.append(self.arena.allocator(), .comment);
+            self.line_no += 1;
         } else {
             var tokenize_next: []const u8 = next_line;
             while (true) {
+                defer self.line_no += 1;
                 if (try self.tokenizeLine(&tokens, tokenize_next, &indent_level)) |block_value| {
                     var out_next_line: ?[]const u8 = null;
                     var word: ArrayList(u8) = .empty;
@@ -226,8 +236,15 @@ pub fn tokenize(self: *Tokenizer, iter: *LineIterator) Error![]Token {
                         indent_level,
                         &out_next_line,
                     );
-                    try tokens.append(self.arena.allocator(), Token{ .string = try word.toOwnedSlice(self.arena.allocator()) });
+                    try tokens.append(self.arena.allocator(), Token{
+                        .string = try word.toOwnedSlice(self.arena.allocator()),
+                    });
+                    // We're treating blocks as though the newline token is only at the end of the value, regardless of block/chomp style.
+                    // Makes parsing easier to expect key, colon, value, newline
+                    try tokens.append(self.arena.allocator(), Token{ .syntax = .newline });
+                    // check if we overshot
                     if (out_next_line) |next| {
+                        log.debug("Encountered next line while tokenizing block-->{s}", .{next});
                         tokenize_next = next;
                         continue;
                     }
@@ -249,6 +266,7 @@ fn tokenizeLine(
     line: []const u8,
     indent_level: *u16,
 ) Error!?struct { BlockStyle, ChompStyle } {
+    log.debug("From tokenizeLine()-->{s}", .{line});
     var spaces: u8 = 0;
     var word: ArrayList(u8) = try .initCapacity(self.arena.allocator(), line.len);
     errdefer word.deinit(self.arena.allocator());
@@ -273,8 +291,12 @@ fn tokenizeLine(
             '\t' => indent_level.* += 1,
             ':' => {
                 // append key and colon
-                try tokens.append(self.arena.allocator(), Token{ .string = try word.toOwnedSlice(self.arena.allocator()) });
+                try dumpTokens(self.arena.allocator(), tokens.items);
+                const word_slice: []const u8 = try word.toOwnedSlice(self.arena.allocator());
+                log.debug("Appending key '{s}' and colon character.", .{word_slice});
+                try tokens.append(self.arena.allocator(), Token{ .string = word_slice });
                 try tokens.append(self.arena.allocator(), Token{ .syntax = .colon });
+                try dumpTokens(self.arena.allocator(), tokens.items);
                 break;
             },
             '-' => {
@@ -282,7 +304,7 @@ fn tokenizeLine(
                 break;
             },
             else => {
-                if (!std.ascii.isAlphanumeric(byte)) {
+                if (!std.ascii.isAlphanumeric(byte) and byte != '_' and byte != '$') {
                     log.err("Encountered invalid character '{c}' on key name (LH-side of colon): Line {d}, pos {d}\n\t'{s}'", .{
                         byte,
                         self.line_no,
@@ -297,6 +319,7 @@ fn tokenizeLine(
         }
     }
 
+    log.debug("Finished reading key-->{s}\n    Now reading value-->{s}", .{ tokens.items[tokens.items.len - 2].asString(), line[lh_index..] });
     var iter: Iter(u8) = .from(line[lh_index..]);
     // consume whitespace
     const next: ?u8 = iter.any(isNonWhitespace, false);
@@ -308,7 +331,10 @@ fn tokenizeLine(
     // is this a multi-line value block or just a single line value?
     switch (next.?) {
         '|' => {
-            const block_tok: ?u8 = iter.any(std.ascii.isWhitespace, false);
+            const block_tok: ?u8 = iter.any(isNonWhitespace, false);
+            log.debug("Encountered block value indicator '|', following by chomp style <{?}>", .{block_tok});
+            try dumpTokens(self.arena.allocator(), tokens.items);
+            indent_level.* += 1;
             if (block_tok) |tok| {
                 return switch (tok) {
                     '+' => .{ BlockStyle.literal, ChompStyle.keep },
@@ -327,7 +353,10 @@ fn tokenizeLine(
             return .{ BlockStyle.literal, ChompStyle.clip };
         },
         '>' => {
-            const block_tok: ?u8 = iter.any(std.ascii.isWhitespace, false);
+            const block_tok: ?u8 = iter.any(isNonWhitespace, false);
+            log.debug("Encountered block value indicator '>', following by chomp style {?}", .{block_tok});
+            try dumpTokens(self.arena.allocator(), tokens.items);
+            indent_level.* += 1;
             if (block_tok) |tok| {
                 return switch (tok) {
                     '+' => .{ BlockStyle.folded, ChompStyle.keep },
@@ -349,6 +378,7 @@ fn tokenizeLine(
         else => iter.scroll(-1),
     }
 
+    log.debug("Not a block value-->{s}", .{line});
     // get the rest of the line
     word = try .initCapacity(self.arena.allocator(), line.len);
     var first: bool = true;
@@ -433,8 +463,11 @@ fn tokenizeLine(
         }
     }
 
+    log.debug("Appending value-->{s}", .{word.items});
     try tokens.append(self.arena.allocator(), Token{ .string = try word.toOwnedSlice(self.arena.allocator()) });
-    try tokens.append(self.arena.allocator(), Token{ .syntax = .newline });
+    if (line[line.len - 1] == '\n') {
+        try tokens.append(self.arena.allocator(), Token{ .syntax = .newline });
+    }
 
     return null;
 }
@@ -454,6 +487,7 @@ fn tokenizeBlock(
         log.err("Failed to read next line: {s} -> {?}", .{ @errorName(err), @errorReturnTrace() });
         return error.ReadFileError;
     } orelse return;
+    log.debug("From tokenizeBlock()-->{s}", .{next_line});
     var next_line_iter: Iter(u8) = .from(next_line);
     var indent_count: u16 = 0;
     var space_count: u16 = 0;
@@ -473,8 +507,10 @@ fn tokenizeBlock(
             },
         }
     }
+    log.debug("Indent count is {d} with indent level {d} on current line-->{s}", .{ indent_count, indent_level, next_line });
     if (indent_count < indent_level) {
         // ope, we're on the next line now
+        log.debug("Encountered next line while parsing block. Block is complete. New line-->{s}", .{next_line});
         out_next_line.* = next_line;
         return;
     }
@@ -535,6 +571,8 @@ pub fn deinit(self: Tokenizer) void {
 // test cases needed:
 // Block values with all the various block/chomp styles
 test "tokenize literal block" {
+    // testing.log_level = .debug;
+
     var tokenizer: Tokenizer = try .new(testing.allocator, .{});
     defer tokenizer.deinit();
 
@@ -558,7 +596,22 @@ test "tokenize literal block" {
     defer line_iter.deinit();
 
     const tokens: []Token = try tokenizer.tokenize(&line_iter);
-    try testing.expectEqual(4, tokens.len);
+    try testing.expectEqual(8, tokens.len);
 
     try dumpTokens(testing.allocator, tokens);
+
+    try testing.expectEqualStrings("line", tokens[0].asString());
+    try testing.expectEqualStrings(":", tokens[1].asString());
+    // clip style with single newline at the end
+    try testing.expectEqualStrings(
+        \\This is a block literal
+        \\yay
+        \\another line
+        \\
+    , tokens[2].asString());
+    try testing.expectEqualStrings("\\n", tokens[3].asString());
+    try testing.expectEqualStrings("next_thing", tokens[4].asString());
+    try testing.expectEqualStrings(":", tokens[5].asString());
+    try testing.expectEqualStrings("wow", tokens[6].asString());
+    try testing.expectEqualStrings("<EOF>", tokens[7].asString());
 }

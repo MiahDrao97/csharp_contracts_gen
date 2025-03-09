@@ -99,17 +99,23 @@ pub fn build(b: *Build) void {
     exe_unit_tests.root_module.addImport("parsing", parsing);
     exe_unit_tests.root_module.addImport("code_gen", code_gen);
 
-    const run_exe_unit_tests: *Run = b.addRunArtifact(exe_unit_tests);
+    // const run_exe_unit_tests: *Run = b.addRunArtifact(exe_unit_tests);
 
     const parsing_unit_tests: *Compile = b.addTest(.{
         .root_module = parsing,
     });
+
+    // https://ziggit.dev/t/zig-debugging-with-lldb/3931/5
+    // const codelldb: *Run = b.addSystemCommand(&.{"codelldb"});
+    // codelldb.addArtifactArg(parsing_unit_tests);
+    // codelldb.addArgs(&.{ "--port", "1234" });
+    // const lldb_step: *Step = b.step("debugtest", "Debug unit tests");
+    // lldb_step.dependOn(&codelldb.step);
     const run_parsing_unit_tests: *Run = b.addRunArtifact(parsing_unit_tests);
 
     // Similar to creating the run step earlier, this exposes a `test` step to
     // the `zig build --help` menu, providing a way for the user to request
     // running the unit tests.
     const test_step: *Step = b.step("test", "Run unit tests");
-    test_step.dependOn(&run_exe_unit_tests.step);
     test_step.dependOn(&run_parsing_unit_tests.step);
 }
