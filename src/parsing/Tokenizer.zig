@@ -9,7 +9,7 @@ const LineIterator = root.LineIterator;
 const ArrayList = std.ArrayListUnmanaged;
 const ParseConfig = root.ParseConfig;
 const testing = std.testing;
-const log = std.log;
+const log = std.log.scoped(.tokenizer);
 
 /// Which line number we're on
 line_no: usize = 1,
@@ -80,7 +80,7 @@ pub const Token = union(enum) {
 };
 
 fn dumpTokens(allocator: Allocator, tokens: []Token) Allocator.Error!void {
-    if (!log.defaultLogEnabled(.debug)) {
+    if (testing.log_level != .debug) {
         return;
     }
     var dump: ArrayList(u8) = .empty;
@@ -99,7 +99,7 @@ fn dumpTokens(allocator: Allocator, tokens: []Token) Allocator.Error!void {
     }
     try dump.appendSlice(allocator, " ]");
 
-    log.debug("{s}\n", .{dump.items});
+    std.debug.print("{s}\n", .{dump.items});
 }
 
 /// Various syntax tokens (symbols only, including newlines and indents)
