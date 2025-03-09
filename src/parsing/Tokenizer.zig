@@ -246,7 +246,6 @@ pub fn tokenize(self: *Tokenizer, iter: *LineIterator) Error![]Token {
                     if (out_next_line) |next| {
                         log.debug("Encountered next line while tokenizing block-->{s}", .{next});
                         tokenize_next = next;
-                        indent_level -= 1;
                         continue;
                     }
                     break;
@@ -276,6 +275,8 @@ fn tokenizeLine(
     defer self.pos = 0;
 
     var lh_index: usize = 0;
+    var indents_encountered: u16 = 0;
+    defer indent_level.* = indents_encountered;
     for (line) |byte| {
         defer {
             lh_index += 1;
@@ -285,11 +286,11 @@ fn tokenizeLine(
             ' ' => {
                 spaces += 1;
                 if (spaces == self.config.tab_size) {
-                    indent_level.* += 1;
+                    indents_encountered += 1;
                     spaces = 0;
                 }
             },
-            '\t' => indent_level.* += 1,
+            '\t' => indents_encountered += 1,
             ':' => {
                 // append key and colon
                 try dumpTokens(self.arena.allocator(), tokens.items);
@@ -335,7 +336,7 @@ fn tokenizeLine(
             const block_tok: ?u8 = iter.any(isNonWhitespace, false);
             log.debug("Encountered block value indicator '|', following by chomp style <{?}>", .{block_tok});
             try dumpTokens(self.arena.allocator(), tokens.items);
-            indent_level.* += 1;
+            indents_encountered += 1;
             if (block_tok) |tok| {
                 return switch (tok) {
                     '+' => .{ BlockStyle.literal, ChompStyle.keep },
@@ -357,7 +358,7 @@ fn tokenizeLine(
             const block_tok: ?u8 = iter.any(isNonWhitespace, false);
             log.debug("Encountered block value indicator '>', following by chomp style {?}", .{block_tok});
             try dumpTokens(self.arena.allocator(), tokens.items);
-            indent_level.* += 1;
+            indents_encountered += 1;
             if (block_tok) |tok| {
                 return switch (tok) {
                     '+' => .{ BlockStyle.folded, ChompStyle.keep },
