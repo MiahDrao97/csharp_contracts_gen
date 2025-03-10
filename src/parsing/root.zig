@@ -541,10 +541,10 @@ pub const LineIterator = union(enum) {
                 errdefer line.deinit(t.allocator);
 
                 while (t.iter.next()) |n| {
+                    try line.append(t.allocator, n);
                     if (n == '\n') {
                         break;
                     }
-                    try line.append(t.allocator, n);
                 }
 
                 if (line.items.len == 0) {

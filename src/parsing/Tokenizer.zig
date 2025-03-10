@@ -80,7 +80,7 @@ pub const Token = union(enum) {
 };
 
 fn dumpTokens(allocator: Allocator, tokens: []Token) Allocator.Error!void {
-    if (testing.log_level != .debug) {
+    if (testing.log_level != .debug or std.log.logEnabled(.debug, .tokenizer)) {
         return;
     }
     var dump: ArrayList(u8) = .empty;
@@ -116,7 +116,7 @@ pub const SyntaxToken = enum {
 
 /// In multi-line value blocks, how are newlines handled?
 const BlockStyle = enum {
-    /// Newlines are ommitted from the block (indicated by '>')
+    /// Newlines are ommitted from the block and replaced with spaces (indicated by '>')
     folded,
     /// Newlines are included (indicated by '|')
     literal,
@@ -124,11 +124,11 @@ const BlockStyle = enum {
 
 /// In multi-line value blocks, how are trailing newlines handled?
 const ChompStyle = enum {
-    /// single newline at the end (indicated without any character processeding the '|' or '>')
+    /// single newline at the end (indicated without any character)
     clip,
-    /// no newlines at the end (indicidated by '-' after the '|' or '>')
+    /// no newlines at the end (indicidated by '-')
     strip,
-    /// all newlines are included at the end (indicated by '+' after the '|' or '>')
+    /// all newlines are included at the end (indicated by '+')
     keep,
 };
 
@@ -236,6 +236,21 @@ pub fn tokenize(self: *Tokenizer, iter: *LineIterator) Error![]Token {
                         indent_level,
                         &out_next_line,
                     );
+                    // evaluate chomp style
+                    switch (block_value.@"1") {
+                        .clip => {
+                            while (word.getLastOrNull() == '\n') {
+                                _ = word.pop();
+                            }
+                            word.append(self.arena.allocator(), '\n') catch unreachable;
+                        },
+                        .strip => {
+                            while (word.getLastOrNull() == '\n') {
+                                _ = word.pop();
+                            }
+                        },
+                        .keep => {},
+                    }
                     try tokens.append(self.arena.allocator(), Token{
                         .string = try word.toOwnedSlice(self.arena.allocator()),
                     });
@@ -334,7 +349,7 @@ fn tokenizeLine(
     switch (next.?) {
         '|' => {
             const block_tok: ?u8 = iter.any(isNonWhitespace, false);
-            log.debug("Encountered block value indicator '|', following by chomp style <{?}>", .{block_tok});
+            log.debug("Encountered block value indicator '|', following by chomp style ({?c})", .{block_tok});
             try dumpTokens(self.arena.allocator(), tokens.items);
             indents_encountered += 1;
             if (block_tok) |tok| {
@@ -356,7 +371,7 @@ fn tokenizeLine(
         },
         '>' => {
             const block_tok: ?u8 = iter.any(isNonWhitespace, false);
-            log.debug("Encountered block value indicator '>', following by chomp style {?}", .{block_tok});
+            log.debug("Encountered block value indicator '>', following by chomp style ({?c})", .{block_tok});
             try dumpTokens(self.arena.allocator(), tokens.items);
             indents_encountered += 1;
             if (block_tok) |tok| {
@@ -520,30 +535,28 @@ fn tokenizeBlock(
     switch (block_style) {
         .folded => {
             while (next_line_iter.next()) |byte| {
+                switch (byte) {
+                    '\n' => log.debug("    Appending '\\n' to block", .{}),
+                    '\t' => log.debug("    Appending '\\t' to block", .{}),
+                    else => log.debug("    Appending '{c}' to block", .{byte})
+                }
                 if (byte != '\n') {
                     value.append(self.arena.allocator(), byte) catch unreachable;
+                } else {
+                    value.append(self.arena.allocator(), ' ') catch unreachable;
                 }
             }
         },
         .literal => {
             while (next_line_iter.next()) |byte| {
+                switch (byte) {
+                    '\n' => log.debug("    Appending '\\n' to block", .{}),
+                    '\t' => log.debug("    Appending '\\t' to block", .{}),
+                    else => log.debug("    Appending '{c}' to block", .{byte})
+                }
                 value.append(self.arena.allocator(), byte) catch unreachable;
             }
         },
-    }
-    switch (chomp_style) {
-        .clip => {
-            while (value.getLastOrNull() == '\n') {
-                _ = value.pop();
-            }
-            value.append(self.arena.allocator(), '\n') catch unreachable;
-        },
-        .strip => {
-            while (value.getLastOrNull() == '\n') {
-                _ = value.pop();
-            }
-        },
-        .keep => {},
     }
     try @call(
         .always_tail,
@@ -572,7 +585,7 @@ pub fn deinit(self: Tokenizer) void {
 
 // test cases needed:
 // Block values with all the various block/chomp styles
-test "tokenize literal block" {
+test "tokenize literal block, clip style" {
     // testing.log_level = .debug;
 
     var tokenizer: Tokenizer = try .new(testing.allocator, .{});
@@ -610,6 +623,50 @@ test "tokenize literal block" {
         \\yay
         \\another line
         \\
+    , tokens[2].asString());
+    try testing.expectEqualStrings("\\n", tokens[3].asString());
+    try testing.expectEqualStrings("next_thing", tokens[4].asString());
+    try testing.expectEqualStrings(":", tokens[5].asString());
+    try testing.expectEqualStrings("wow", tokens[6].asString());
+    try testing.expectEqualStrings("<EOF>", tokens[7].asString());
+}
+test "tokenize literal block, strip style" {
+    // testing.log_level = .debug;
+
+    var tokenizer: Tokenizer = try .new(testing.allocator, .{});
+    defer tokenizer.deinit();
+
+    const yaml =
+        \\line: |-
+        \\  This is a block literal
+        \\  yay
+        \\  another line
+        \\next_thing: wow
+    ;
+
+    var arena: ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+
+    var line_iter: LineIterator = .{
+        .@"test" = .{
+            .allocator = arena.allocator(),
+            .iter = .from(yaml),
+        },
+    };
+    defer line_iter.deinit();
+
+    const tokens: []Token = try tokenizer.tokenize(&line_iter);
+    try testing.expectEqual(8, tokens.len);
+
+    try dumpTokens(testing.allocator, tokens);
+
+    try testing.expectEqualStrings("line", tokens[0].asString());
+    try testing.expectEqualStrings(":", tokens[1].asString());
+    // clip style with single newline at the end
+    try testing.expectEqualStrings(
+        \\This is a block literal
+        \\yay
+        \\another line
     , tokens[2].asString());
     try testing.expectEqualStrings("\\n", tokens[3].asString());
     try testing.expectEqualStrings("next_thing", tokens[4].asString());
