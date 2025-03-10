@@ -80,7 +80,7 @@ pub const Token = union(enum) {
 };
 
 fn dumpTokens(allocator: Allocator, tokens: []Token) Allocator.Error!void {
-    if (testing.log_level != .debug or std.log.logEnabled(.debug, .tokenizer)) {
+    if ((@import("builtin").is_test and testing.log_level != .debug) or !std.log.logEnabled(.debug, .tokenizer)) {
         return;
     }
     var dump: ArrayList(u8) = .empty;
@@ -214,7 +214,6 @@ pub fn tokenize(self: *Tokenizer, iter: *LineIterator) Error![]Token {
         log.err("Could not read next line ({d}): {s} -> {?}", .{ self.line_no, @errorName(err), @errorReturnTrace() });
         return error.ReadFileError;
     })
-
     |next_line| {
         // zig fmt: on
         const trimmed: []const u8 = std.mem.trim(u8, next_line, " \t");
@@ -540,6 +539,10 @@ fn tokenizeBlock(
                     '\t' => log.debug("    Appending '\\t' to block", .{}),
                     else => log.debug("    Appending '{c}' to block", .{byte})
                 }
+                // FIXME :
+                // 1. Don't append a space for the last line
+                // 2. Lines with extra indents are not folded
+                // 3. Double newlines translate to 1 newline, kinda like an escape sequence
                 if (byte != '\n') {
                     value.append(self.arena.allocator(), byte) catch unreachable;
                 } else {
@@ -586,8 +589,6 @@ pub fn deinit(self: Tokenizer) void {
 // test cases needed:
 // Block values with all the various block/chomp styles
 test "tokenize literal block, clip style" {
-    // testing.log_level = .debug;
-
     var tokenizer: Tokenizer = try .new(testing.allocator, .{});
     defer tokenizer.deinit();
 
@@ -618,12 +619,7 @@ test "tokenize literal block, clip style" {
     try testing.expectEqualStrings("line", tokens[0].asString());
     try testing.expectEqualStrings(":", tokens[1].asString());
     // clip style with single newline at the end
-    try testing.expectEqualStrings(
-        \\This is a block literal
-        \\yay
-        \\another line
-        \\
-    , tokens[2].asString());
+    try testing.expectEqualStrings("This is a block literal\nyay\nanother line\n", tokens[2].asString());
     try testing.expectEqualStrings("\\n", tokens[3].asString());
     try testing.expectEqualStrings("next_thing", tokens[4].asString());
     try testing.expectEqualStrings(":", tokens[5].asString());
@@ -631,8 +627,6 @@ test "tokenize literal block, clip style" {
     try testing.expectEqualStrings("<EOF>", tokens[7].asString());
 }
 test "tokenize literal block, strip style" {
-    // testing.log_level = .debug;
-
     var tokenizer: Tokenizer = try .new(testing.allocator, .{});
     defer tokenizer.deinit();
 
@@ -662,12 +656,164 @@ test "tokenize literal block, strip style" {
 
     try testing.expectEqualStrings("line", tokens[0].asString());
     try testing.expectEqualStrings(":", tokens[1].asString());
+    // strip style with no newline at the end
+    try testing.expectEqualStrings("This is a block literal\nyay\nanother line", tokens[2].asString());
+    try testing.expectEqualStrings("\\n", tokens[3].asString());
+    try testing.expectEqualStrings("next_thing", tokens[4].asString());
+    try testing.expectEqualStrings(":", tokens[5].asString());
+    try testing.expectEqualStrings("wow", tokens[6].asString());
+    try testing.expectEqualStrings("<EOF>", tokens[7].asString());
+}
+test "tokenize literal block, keep style" {
+    var tokenizer: Tokenizer = try .new(testing.allocator, .{});
+    defer tokenizer.deinit();
+
+    const yaml =
+        \\line: |+
+        \\  This is a block literal
+        \\  yay
+        \\  another line
+        \\  
+        \\  
+        \\next_thing: wow
+    ;
+
+    var arena: ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+
+    var line_iter: LineIterator = .{
+        .@"test" = .{
+            .allocator = arena.allocator(),
+            .iter = .from(yaml),
+        },
+    };
+    defer line_iter.deinit();
+
+    const tokens: []Token = try tokenizer.tokenize(&line_iter);
+    try testing.expectEqual(8, tokens.len);
+
+    try dumpTokens(testing.allocator, tokens);
+
+    try testing.expectEqualStrings("line", tokens[0].asString());
+    try testing.expectEqualStrings(":", tokens[1].asString());
+    // keep style with all newlines intact (this is looks funky as a multi-string literal, so I'm just ensuring there are 3 newlines as expected)
+    try testing.expectEqualStrings("This is a block literal\nyay\nanother line\n\n\n", tokens[2].asString());
+    try testing.expectEqualStrings("\\n", tokens[3].asString());
+    try testing.expectEqualStrings("next_thing", tokens[4].asString());
+    try testing.expectEqualStrings(":", tokens[5].asString());
+    try testing.expectEqualStrings("wow", tokens[6].asString());
+    try testing.expectEqualStrings("<EOF>", tokens[7].asString());
+}
+test "tokenize folded block, clip style" {
+    var tokenizer: Tokenizer = try .new(testing.allocator, .{});
+    defer tokenizer.deinit();
+
+    const yaml =
+        \\line: >
+        \\  This is a block literal
+        \\  yay
+        \\  another line
+        \\next_thing: wow
+    ;
+
+    var arena: ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+
+    var line_iter: LineIterator = .{
+        .@"test" = .{
+            .allocator = arena.allocator(),
+            .iter = .from(yaml),
+        },
+    };
+    defer line_iter.deinit();
+
+    const tokens: []Token = try tokenizer.tokenize(&line_iter);
+    try testing.expectEqual(8, tokens.len);
+
+    try dumpTokens(testing.allocator, tokens);
+
+    try testing.expectEqualStrings("line", tokens[0].asString());
+    try testing.expectEqualStrings(":", tokens[1].asString());
     // clip style with single newline at the end
-    try testing.expectEqualStrings(
-        \\This is a block literal
-        \\yay
-        \\another line
-    , tokens[2].asString());
+    try testing.expectEqualStrings("This is a block literal yay another line \n", tokens[2].asString());
+    try testing.expectEqualStrings("\\n", tokens[3].asString());
+    try testing.expectEqualStrings("next_thing", tokens[4].asString());
+    try testing.expectEqualStrings(":", tokens[5].asString());
+    try testing.expectEqualStrings("wow", tokens[6].asString());
+    try testing.expectEqualStrings("<EOF>", tokens[7].asString());
+}
+test "tokenize folded block, strip style" {
+    var tokenizer: Tokenizer = try .new(testing.allocator, .{});
+    defer tokenizer.deinit();
+
+    const yaml =
+        \\line: >-
+        \\  This is a block literal
+        \\  yay
+        \\  another line
+        \\next_thing: wow
+    ;
+
+    var arena: ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+
+    var line_iter: LineIterator = .{
+        .@"test" = .{
+            .allocator = arena.allocator(),
+            .iter = .from(yaml),
+        },
+    };
+    defer line_iter.deinit();
+
+    const tokens: []Token = try tokenizer.tokenize(&line_iter);
+    try testing.expectEqual(8, tokens.len);
+
+    try dumpTokens(testing.allocator, tokens);
+
+    try testing.expectEqualStrings("line", tokens[0].asString());
+    try testing.expectEqualStrings(":", tokens[1].asString());
+    // strip style with no newline at the end
+    try testing.expectEqualStrings("This is a block literal yay another line ", tokens[2].asString());
+    try testing.expectEqualStrings("\\n", tokens[3].asString());
+    try testing.expectEqualStrings("next_thing", tokens[4].asString());
+    try testing.expectEqualStrings(":", tokens[5].asString());
+    try testing.expectEqualStrings("wow", tokens[6].asString());
+    try testing.expectEqualStrings("<EOF>", tokens[7].asString());
+}
+test "tokenize folded block, keep style" {
+    var tokenizer: Tokenizer = try .new(testing.allocator, .{});
+    defer tokenizer.deinit();
+
+    const yaml =
+        \\line: >+
+        \\  This is a block literal
+        \\  yay
+        \\  another line
+        \\  
+        \\  
+        \\next_thing: wow
+    ;
+
+    var arena: ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+
+    var line_iter: LineIterator = .{
+        .@"test" = .{
+            .allocator = arena.allocator(),
+            .iter = .from(yaml),
+        },
+    };
+    defer line_iter.deinit();
+
+    const tokens: []Token = try tokenizer.tokenize(&line_iter);
+    try testing.expectEqual(8, tokens.len);
+
+    try dumpTokens(testing.allocator, tokens);
+
+    try testing.expectEqualStrings("line", tokens[0].asString());
+    try testing.expectEqualStrings(":", tokens[1].asString());
+    // keep style with all newlines intact (this is looks funky as a multi-string literal, so I'm just ensuring there are 3 newlines as expected)
+    try testing.expectEqualStrings("This is a block literal yay another line   ", tokens[2].asString());
     try testing.expectEqualStrings("\\n", tokens[3].asString());
     try testing.expectEqualStrings("next_thing", tokens[4].asString());
     try testing.expectEqualStrings(":", tokens[5].asString());
