@@ -7,6 +7,7 @@ const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
 const LineIterator = root.LineIterator;
 const ArrayList = std.ArrayListUnmanaged;
+const MultiArrayList = std.MultiArrayList;
 const ParseConfig = root.ParseConfig;
 const testing = std.testing;
 const log = std.log.scoped(.tokenizer);
@@ -516,9 +517,9 @@ fn tokenizeBlock(
         // Before we even do anything, if we're a folded-style block that encountered a double-newline, we'll append a newline at the beginning.
         // Otherwise, we append a space since newlines are all turned into spaces.
         if (folded_newline.?) {
-            value.append(self.arena.allocator(), '\n') catch unreachable;
+            try value.append(self.arena.allocator(), '\n');
         } else {
-            value.append(self.arena.allocator(), ' ') catch unreachable;
+            try value.append(self.arena.allocator(), ' ');
         }
     }
 
@@ -573,7 +574,7 @@ fn tokenizeBlock(
                     else => log.debug("    Appending '{c}' to block", .{byte})
                 }
                 if (byte != '\n') {
-                    value.append(self.arena.allocator(), byte) catch unreachable;
+                    try value.append(self.arena.allocator(), byte);
                 } else {
                     // Lines with extra indentation do not get their newlines folded.
                     if (value.getLastOrNull() == '\t') {
@@ -599,7 +600,7 @@ fn tokenizeBlock(
                     '\t' => log.debug("    Appending '\\t' to block", .{}),
                     else => log.debug("    Appending '{c}' to block", .{byte})
                 }
-                value.append(self.arena.allocator(), byte) catch unreachable;
+                try value.append(self.arena.allocator(), byte);
             }
         },
     }
@@ -628,6 +629,22 @@ pub fn deinit(self: Tokenizer) void {
     self.arena.deinit();
     alloc.destroy(arena_ptr);
 }
+
+const Block = struct {
+    lines: MultiArrayList(Block),
+};
+
+const BlockLine = struct {
+    offset: usize,
+    len: usize,
+
+    pub fn segment(self: BlockLine, slice: []const u8) []const u8 {
+        if (self.len == 0 or slice.len == 0) {
+            return &[_]u8{};
+        }
+        return slice[self.offset..self.len];
+    }
+};
 
 // test cases needed:
 // Block values with all the various block/chomp styles
