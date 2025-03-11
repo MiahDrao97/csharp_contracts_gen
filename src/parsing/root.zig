@@ -322,7 +322,11 @@ pub const NodeMap = struct {
         }
         try self.keys_packed.appendSlice(allocator, k);
 
-        self.value_map.put(allocator, StringHash.from(k), Value{ .node = v, .offset = next_idx }) catch |err| switch (err) {
+        self.value_map.put(
+            allocator,
+            StringHash.from(k),
+            Value{ .node = v, .offset = next_idx },
+        ) catch |err| switch (err) {
             Allocator.Error.OutOfMemory => |oom| return oom,
             else => unreachable,
         };
