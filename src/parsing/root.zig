@@ -288,11 +288,11 @@ pub const NodeMap = struct {
         map: NodeMap,
 
         /// Get next key-value pair or null if at the end of the collection
-        pub fn next(self: *Iterator) ?struct { []const u8, Node } {
+        pub fn next(self: *Iterator) ?struct { []const u8, *Node } {
             const next_node_primitive: ?HashMap.Entry = self.inner.next();
             if (next_node_primitive) |n| {
                 const key: []const u8 = mem.sliceTo(self.map.keys_packed.items[@as(usize, n.value_ptr.offset)..], 0);
-                return .{ key, n.value_ptr.node };
+                return .{ key, &n.value_ptr.node };
             }
             return null;
         }
@@ -312,8 +312,15 @@ pub const NodeMap = struct {
         .value_map = .empty,
     };
 
-    /// Put a new node (overwrites previous entry if a collision occurs)
-    pub fn put(self: *NodeMap, allocator: Allocator, k: []const u8, v: Node) Allocator.Error!void {
+    /// Put a new node (overwrites previous entry if a collision occurs).
+    /// Returns `error.InvalidKey` if the key contains any null characters.
+    pub fn put(self: *NodeMap, allocator: Allocator, k: []const u8, v: Node) (error{InvalidKey} || Allocator.Error)!void {
+        for (k) |byte| {
+            if (byte == 0) {
+                return error.InvalidKey;
+            }
+        }
+
         var next_idx: u32 = @intCast(self.keys_packed.items.len);
         if (next_idx > 0) {
             // insert our separator beforehand if we're not the first key
@@ -440,7 +447,7 @@ test "NodeMap" {
     try testing.expectEqualStrings("value", map.get("key").?.value);
 
     iter = map.iter();
-    const kvp: ?struct { []const u8, Node } = iter.next();
+    const kvp: ?struct { []const u8, *Node } = iter.next();
     try testing.expect(kvp != null);
     try testing.expectEqualStrings("key", kvp.?.@"0");
     try testing.expectEqualStrings("value", kvp.?.@"1".value);
@@ -503,7 +510,7 @@ test "Node projectTo()" {
 
     // check iterator
     var iter: NodeMap.Iterator = obj.iter();
-    var next: ?struct { []const u8, Node } = null;
+    var next: ?struct { []const u8, *Node } = null;
 
     next = iter.next();
     try testing.expectEqualStrings("static_value", next.?.@"0");

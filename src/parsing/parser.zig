@@ -12,7 +12,7 @@ const Allocator = std.mem.Allocator;
 const NodeMap = root.NodeMap;
 const ArrayList = std.ArrayList;
 
-pub const Error = error{ EOF, UnexpectedToken } || Allocator.Error;
+pub const Error = error{ EOF, UnexpectedToken, InvalidKey } || Allocator.Error;
 
 /// Parse tokens, resulting in a `Parsed` structure
 pub fn parse(allocator: Allocator, tokens: []Token) Error!Parsed {
