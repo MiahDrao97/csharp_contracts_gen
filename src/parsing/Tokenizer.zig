@@ -33,6 +33,7 @@ pub const Error = error{
     UnexpectedToken,
     InvalidEscapeSequence,
     ReadFileError,
+    InvalidIndentation,
 } || Allocator.Error;
 
 /// Token for the parser to intelligbly piece together what in the world we're doing
@@ -327,8 +328,12 @@ fn tokenizeLine(
             },
             '\t' => indents_encountered += 1,
             ':' => {
-                // append key and colon
+                // append indents, key, and colon
                 try dumpTokens(self.arena.allocator(), tokens.items);
+                log.debug("Appending {d} indents", .{indents_encountered});
+                for (0..indents_encountered) |_| {
+                    try tokens.append(self.arena.allocator(), Token{ .syntax = .indent });
+                }
                 const word_slice: []const u8 = try word.toOwnedSlice(self.arena.allocator());
                 log.debug("Appending key '{s}' and colon character.", .{word_slice});
                 try tokens.append(self.arena.allocator(), Token{ .string = word_slice });
@@ -337,6 +342,10 @@ fn tokenizeLine(
                 break;
             },
             '-' => {
+                // append indents and dash
+                for (0..indents_encountered) |_| {
+                    try tokens.append(self.arena.allocator(), Token{ .syntax = .indent });
+                }
                 try tokens.append(self.arena.allocator(), Token{ .syntax = .dash });
                 break;
             },
@@ -354,6 +363,11 @@ fn tokenizeLine(
                 word.append(self.arena.allocator(), byte) catch unreachable;
             },
         }
+    }
+
+    if (spaces > 0) {
+        log.err("Expecting consistent indentation but found indentation that does not match the configured tabsize, line {d}: {s}", .{ self.line_no, line });
+        return error.InvalidIndentation;
     }
 
     log.debug("Finished reading key-->{s}\n    Now reading value-->{s}", .{ tokens.items[tokens.items.len - 2].asString(), line[lh_index..] });
@@ -519,7 +533,7 @@ fn tokenizeBlock(
     chomp_style: ChompStyle,
     indent_level: u16,
     out_next_line: *?[]const u8,
-    last_line: ?BlockLine,
+    previous: ?BlockSegment,
 ) Error!void {
     defer {
         self.line_no += 1;
@@ -527,17 +541,17 @@ fn tokenizeBlock(
     }
 
     var len: usize = 0;
-    var last_chunk: ?BlockLine = last_line;
-    if (block_style == .folded and last_line != null) {
+    var prev_cpy: ?BlockSegment = previous;
+    if (block_style == .folded and previous != null) {
         // Before we even do anything, if we're a folded-style block that encountered a double-newline, we'll append a newline at the beginning.
         // Otherwise, we append a space since newlines are all turned into spaces.
-        if (last_chunk.?.folded_newline) {
+        if (prev_cpy.?.folded_newline) {
             try value.append(self.arena.allocator(), '\n');
         } else {
             try value.append(self.arena.allocator(), ' ');
         }
         // rather than add the length, we'll simply append this to the length of the last line since technically represents the previous chunk
-        last_chunk.?.len += 1;
+        prev_cpy.?.len += 1;
     }
 
     // start parsing next line...
@@ -595,8 +609,8 @@ fn tokenizeBlock(
                     len += 1;
                 } else {
                     // Lines with extra indentation do not get their newlines folded.
-                    if (last_chunk) |l| {
-                        if (l.segment(value.items).len > 0 and l.segment(value.items)[0] == '\t') {
+                    if (prev_cpy) |p| {
+                        if (p.segment(value.items).len > 0 and p.segment(value.items)[0] == '\t') {
                             try value.append(self.arena.allocator(), byte);
                             len += 1;
                         }
@@ -634,9 +648,9 @@ fn tokenizeBlock(
             chomp_style,
             indent_level,
             out_next_line,
-            BlockLine{
+            BlockSegment{
                 .len = len,
-                .offset = if (last_chunk) |l| l.len + l.offset else 0,
+                .offset = if (prev_cpy) |p| p.len + p.offset else 0,
                 .folded_newline = should_esc_newline,
             },
         },
@@ -653,12 +667,12 @@ pub fn deinit(self: Tokenizer) void {
     alloc.destroy(arena_ptr);
 }
 
-const BlockLine = struct {
+const BlockSegment = struct {
     offset: usize,
     len: usize,
     folded_newline: bool,
 
-    pub fn segment(self: BlockLine, slice: []const u8) []const u8 {
+    pub fn segment(self: BlockSegment, slice: []const u8) []const u8 {
         log.debug("Value to segment (offset: {d}, len: {d}): {s}", .{ self.offset, self.len, slice });
         if (self.len == 0 or slice.len <= self.offset + self.len) {
             return &[_]u8{};
