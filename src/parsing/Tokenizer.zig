@@ -249,14 +249,27 @@ pub fn tokenize(self: *Tokenizer, iter: *LineIterator) Error![]Token {
                             while (word.getLastOrNull() == '\n') {
                                 _ = word.pop();
                             }
-                            word.append(self.arena.allocator(), '\n') catch unreachable;
+                            try word.append(self.arena.allocator(), '\n');
                         },
                         .strip => {
                             while (word.getLastOrNull() == '\n') {
                                 _ = word.pop();
                             }
                         },
-                        .keep => {},
+                        .keep => {
+                            if (block_value.@"0" == .folded) {
+                                // kind of a naive solution, but if we encounter a bunch of trailing newlines in a folded block, they'd get replaced with n-1 spaces
+                                var i: usize = 0;
+                                while (word.getLastOrNull() == ' ') {
+                                    _ = word.pop();
+                                    i += 1;
+                                }
+                                for (0..i) |_| {
+                                    try word.append(self.arena.allocator(), '\n');
+                                }
+                                try word.append(self.arena.allocator(), '\n');
+                            }
+                        },
                     }
                     try tokens.append(self.arena.allocator(), Token{
                         .string = try word.toOwnedSlice(self.arena.allocator()),
@@ -506,21 +519,25 @@ fn tokenizeBlock(
     chomp_style: ChompStyle,
     indent_level: u16,
     out_next_line: *?[]const u8,
-    folded_newline: ?bool,
+    last_line: ?BlockLine,
 ) Error!void {
     defer {
         self.line_no += 1;
         self.pos = 0;
     }
 
-    if (block_style == .folded and folded_newline != null) {
+    var len: usize = 0;
+    var last_chunk: ?BlockLine = last_line;
+    if (block_style == .folded and last_line != null) {
         // Before we even do anything, if we're a folded-style block that encountered a double-newline, we'll append a newline at the beginning.
         // Otherwise, we append a space since newlines are all turned into spaces.
-        if (folded_newline.?) {
+        if (last_chunk.?.folded_newline) {
             try value.append(self.arena.allocator(), '\n');
         } else {
             try value.append(self.arena.allocator(), ' ');
         }
+        // rather than add the length, we'll simply append this to the length of the last line since technically represents the previous chunk
+        last_chunk.?.len += 1;
     }
 
     // start parsing next line...
@@ -552,7 +569,7 @@ fn tokenizeBlock(
     log.debug("Indent count is {d} with indent level {d} on current line-->{s}", .{ indent_count, indent_level, next_line });
     if (indent_count < indent_level) {
         // ope, we're on the next line now
-        if (block_style == .folded and folded_newline == false and value.getLastOrNull() == ' ') {
+        if (block_style == .folded and value.getLastOrNull() == ' ') {
             // pop off trailing space that's an artifact of this tokenization strategy
             _ = value.pop();
         }
@@ -561,7 +578,7 @@ fn tokenizeBlock(
         return;
     }
 
-    var should_esc_newline: ?bool = null;
+    var should_esc_newline: bool = false;
     switch (block_style) {
         .folded => {
             while (next_line_iter.next()) |byte| {
@@ -575,26 +592,27 @@ fn tokenizeBlock(
                 }
                 if (byte != '\n') {
                     try value.append(self.arena.allocator(), byte);
+                    len += 1;
                 } else {
                     // Lines with extra indentation do not get their newlines folded.
-                    if (value.getLastOrNull() == '\t') {
-                        // FIXME :
-                        std.debug.panicExtra(@returnAddress(), "We need to keep track of the last line to determine if it ended with a newline and/or started with tabs", .{});
-                        // value.append(self.arena.allocator(), byte) catch unreachable;
-                    } else if (should_esc_newline != true and next_line.len == 1) {
+                    if (last_chunk) |l| {
+                        if (l.segment(value.items).len > 0 and l.segment(value.items)[0] == '\t') {
+                            try value.append(self.arena.allocator(), byte);
+                            len += 1;
+                        }
+                    } else if (next_line.len == 1) {
+                        // this scenario indicates this line is simply a newline character, which we interpret as a quasi escape sequence for newlines
                         should_esc_newline = true;
-                        // a newline should be the last character we encounter in the iterator
                     }
                 }
-            }
-
-            if (should_esc_newline == null) {
-                should_esc_newline = false;
             }
         },
         .literal => {
             while (next_line_iter.next()) |byte| {
-                defer self.pos += 1;
+                defer {
+                    self.pos += 1;
+                    len += 1;
+                }
                 switch (byte) {
                     '\n' => log.debug("    Appending '\\n' to block", .{}),
                     '\t' => log.debug("    Appending '\\t' to block", .{}),
@@ -604,6 +622,7 @@ fn tokenizeBlock(
             }
         },
     }
+
     return @call(
         .always_tail,
         tokenizeBlock,
@@ -615,7 +634,11 @@ fn tokenizeBlock(
             chomp_style,
             indent_level,
             out_next_line,
-            should_esc_newline,
+            BlockLine{
+                .len = len,
+                .offset = if (last_chunk) |l| l.len + l.offset else 0,
+                .folded_newline = should_esc_newline,
+            },
         },
     );
 }
@@ -630,19 +653,19 @@ pub fn deinit(self: Tokenizer) void {
     alloc.destroy(arena_ptr);
 }
 
-const Block = struct {
-    lines: MultiArrayList(Block),
-};
-
 const BlockLine = struct {
     offset: usize,
     len: usize,
+    folded_newline: bool,
 
     pub fn segment(self: BlockLine, slice: []const u8) []const u8 {
-        if (self.len == 0 or slice.len == 0) {
+        log.debug("Value to segment (offset: {d}, len: {d}): {s}", .{ self.offset, self.len, slice });
+        if (self.len == 0 or slice.len <= self.offset + self.len) {
             return &[_]u8{};
         }
-        return slice[self.offset..self.len];
+        const ret: []const u8 = slice[self.offset .. self.offset + self.len];
+        log.debug("    Returning segment-->{s}<--", .{ret});
+        return ret;
     }
 };
 
@@ -872,8 +895,8 @@ test "tokenize folded block, keep style" {
 
     try testing.expectEqualStrings("line", tokens[0].asString());
     try testing.expectEqualStrings(":", tokens[1].asString());
-    // FIXME : This is still wrong... The keep chomp should keep all 3 newlines
-    try testing.expectEqualStrings("This is a block literal yay another line  ", tokens[2].asString());
+    // allowed to keep all newlines at the end
+    try testing.expectEqualStrings("This is a block literal yay another line\n\n\n", tokens[2].asString());
     try testing.expectEqualStrings("\\n", tokens[3].asString());
     try testing.expectEqualStrings("next_thing", tokens[4].asString());
     try testing.expectEqualStrings(":", tokens[5].asString());
