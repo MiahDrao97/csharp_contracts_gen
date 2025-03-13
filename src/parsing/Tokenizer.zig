@@ -5,6 +5,7 @@ const root = @import("root.zig");
 const Iter = iter_z.Iter;
 const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
+const ResetMode = ArenaAllocator.ResetMode;
 const LineIterator = root.LineIterator;
 const ArrayList = std.ArrayListUnmanaged;
 const MultiArrayList = std.MultiArrayList;
@@ -29,7 +30,6 @@ pub const Tokenizer = @This();
 pub const Error = error{
     InvalidSyntax,
     UnterminatedQuotes,
-    EarlyLineTermination,
     UnexpectedToken,
     InvalidEscapeSequence,
     ReadFileError,
@@ -64,6 +64,14 @@ pub const Token = union(enum) {
         return switch (self) {
             .string => |s| s,
             else => null,
+        };
+    }
+
+    /// Determine if a token is a specific syntax marker
+    pub fn isSyntax(self: Token, syntax: SyntaxToken) bool {
+        return switch (self) {
+            .syntax => |syn| syn == syntax,
+            else => false,
         };
     }
 
@@ -233,8 +241,11 @@ pub fn tokenize(self: *Tokenizer, iter: *LineIterator) Error![]Token {
                 switch (try self.tokenizeLine(&tokens, tokenize_next, &indent_level)) {
                     // Break and tokenize next line
                     .key_value_pair => break,
-                    // keep parsing
-                    .array_or_obj => break,
+                    // append newline and keep parsing
+                    .array_or_obj => {
+                        try tokens.append(self.arena.allocator(), Token{ .syntax = .newline });
+                        break;
+                    },
                     // Parse block value (which is multi-line)
                     .block_value => |block_value| {
                         var out_next_line: ?[]const u8 = null;
@@ -295,10 +306,8 @@ pub fn tokenize(self: *Tokenizer, iter: *LineIterator) Error![]Token {
                 break;
             }
         }
-        // do we need to manually append a newline to our tokens list or does that happen in `tokenizeLine`?
     }
     try tokens.append(self.arena.allocator(), .eof);
-
     return try tokens.toOwnedSlice(self.arena.allocator());
 }
 
@@ -320,8 +329,15 @@ fn tokenizeLine(
     // start reading the value
     log.debug("Finished reading key-->{s}\n    Now reading value-->{s}", .{ tokens.items[tokens.items.len - 2].asString(), line[lh_index..] });
     var iter: Iter(u8) = .from(line[lh_index..]);
+    var next: ?u8 = null;
     // consume whitespace after the ':'
-    const next: ?u8 = iter.any(isNonWhitespace, false);
+    while (iter.next()) |byte| {
+        self.pos += 1;
+        if (isNonWhitespace(byte)) {
+            next = byte;
+            break;
+        }
+    }
     // this scenario means that we have a "key: \n" situation, which indicates this has to be an object or array
     if (next == null) {
         log.debug("Encountered early line termination. Determining this must be an array or object: Line {d}, pos {d}\n\t'{s}'", .{ self.line_no, self.pos, line });
@@ -435,11 +451,33 @@ fn tokenizeLine(
             continue;
         }
 
+        if (byte == ':' and quote_type == null and tokens.getLast().isSyntax(.dash)) {
+            // could be an array of objects
+            log.debug("Determined this array is an array of objects, line {d}, pos {d}", .{ self.line_no, self.pos });
+            try dumpTokens(self.arena.allocator(), tokens.items);
+            try tokens.append(self.arena.allocator(), Token{ .string = try word.toOwnedSlice(self.arena.allocator()) });
+            try tokens.append(self.arena.allocator(), Token{ .syntax = .colon });
+            try dumpTokens(self.arena.allocator(), tokens.items);
+
+            word = try .initCapacity(self.arena.allocator(), line.len);
+            while (iter.next()) |n| {
+                if (isNonWhitespace(n)) {
+                    word.append(self.arena.allocator(), n) catch unreachable;
+                    break;
+                }
+            }
+            first = true;
+            continue;
+        }
+
         word.append(self.arena.allocator(), byte) catch unreachable;
     }
 
     if (quote_type) |q| {
-        const last_char: u8 = word.getLast();
+        var last_char: u8 = word.getLast();
+        if (last_char == '\n') {
+            last_char = word.items[word.items.len - 1];
+        }
         switch (q) {
             .single => {
                 if (word.items.len == 1 or last_char != '\'') {
@@ -695,6 +733,11 @@ pub fn deinit(self: Tokenizer) void {
 
     self.arena.deinit();
     alloc.destroy(arena_ptr);
+}
+
+/// Instead of de-initializing everything, can reset the backing arena
+pub fn reset(self: *Tokenizer, reset_mode: ResetMode) void {
+    _ = self.arena.reset(reset_mode);
 }
 
 const TokenizeLineResult = union(enum) {
@@ -979,7 +1022,7 @@ test "tokenize array" {
     defer line_iter.deinit();
 
     const tokens: []Token = try tokenizer.tokenize(&line_iter);
-    try testing.expectEqual(14, tokens.len);
+    try testing.expectEqual(15, tokens.len);
 
     try dumpTokens(testing.allocator, tokens);
 
@@ -989,12 +1032,125 @@ test "tokenize array" {
     try testing.expectEqualStrings("\\n", tokens[3].asString());
     try testing.expectEqualStrings("arr", tokens[4].asString());
     try testing.expectEqualStrings(":", tokens[5].asString());
-    try testing.expectEqualStrings("\\t", tokens[6].asString());
-    try testing.expectEqualStrings("-", tokens[7].asString());
-    try testing.expectEqualStrings("value1", tokens[8].asString());
-    try testing.expectEqualStrings("\\n", tokens[9].asString());
-    try testing.expectEqualStrings("\\t", tokens[10].asString());
-    try testing.expectEqualStrings("-", tokens[11].asString());
-    try testing.expectEqualStrings("value2", tokens[12].asString());
-    try testing.expectEqualStrings("<EOF>", tokens[13].asString());
+    try testing.expectEqualStrings("\\n", tokens[6].asString());
+    try testing.expectEqualStrings("\\t", tokens[7].asString());
+    try testing.expectEqualStrings("-", tokens[8].asString());
+    try testing.expectEqualStrings("value1", tokens[9].asString());
+    try testing.expectEqualStrings("\\n", tokens[10].asString());
+    try testing.expectEqualStrings("\\t", tokens[11].asString());
+    try testing.expectEqualStrings("-", tokens[12].asString());
+    try testing.expectEqualStrings("value2", tokens[13].asString());
+    try testing.expectEqualStrings("<EOF>", tokens[14].asString());
+}
+test "tokenize obj" {
+    testing.log_level = .debug;
+
+    var tokenizer: Tokenizer = try .new(testing.allocator, .{});
+    defer tokenizer.deinit();
+
+    const yaml =
+        \\line: this is a value
+        \\obj:
+        \\  prop: value1
+        \\  other_prop: value2
+    ;
+
+    var arena: ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+
+    var line_iter: LineIterator = .{
+        .@"test" = .{
+            .allocator = arena.allocator(),
+            .iter = .from(yaml),
+        },
+    };
+    defer line_iter.deinit();
+
+    const tokens: []Token = try tokenizer.tokenize(&line_iter);
+    try testing.expectEqual(17, tokens.len);
+
+    try dumpTokens(testing.allocator, tokens);
+
+    try testing.expectEqualStrings("line", tokens[0].asString());
+    try testing.expectEqualStrings(":", tokens[1].asString());
+    try testing.expectEqualStrings("this is a value", tokens[2].asString());
+    try testing.expectEqualStrings("\\n", tokens[3].asString());
+    try testing.expectEqualStrings("obj", tokens[4].asString());
+    try testing.expectEqualStrings(":", tokens[5].asString());
+    try testing.expectEqualStrings("\\n", tokens[6].asString());
+    try testing.expectEqualStrings("\\t", tokens[7].asString());
+    try testing.expectEqualStrings("prop", tokens[8].asString());
+    try testing.expectEqualStrings(":", tokens[9].asString());
+    try testing.expectEqualStrings("value1", tokens[10].asString());
+    try testing.expectEqualStrings("\\n", tokens[11].asString());
+    try testing.expectEqualStrings("\\t", tokens[12].asString());
+    try testing.expectEqualStrings("other_prop", tokens[13].asString());
+    try testing.expectEqualStrings(":", tokens[14].asString());
+    try testing.expectEqualStrings("value2", tokens[15].asString());
+    try testing.expectEqualStrings("<EOF>", tokens[16].asString());
+}
+test "tokenize list of objects" {
+    var tokenizer: Tokenizer = try .new(testing.allocator, .{});
+    defer tokenizer.deinit();
+
+    const yaml =
+        \\line: this is a value
+        \\list:
+        \\  - prop: value1
+        \\    other_prop: value2
+        \\  - prop: value3
+        \\    other_prop: value4
+    ;
+
+    var arena: ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+
+    var line_iter: LineIterator = .{
+        .@"test" = .{
+            .allocator = arena.allocator(),
+            .iter = .from(yaml),
+        },
+    };
+    defer line_iter.deinit();
+
+    const tokens: []Token = try tokenizer.tokenize(&line_iter);
+    testing.expectEqual(31, tokens.len) catch |err| {
+        testing.log_level = .debug;
+        try dumpTokens(testing.allocator, tokens);
+        return err;
+    };
+
+    try dumpTokens(testing.allocator, tokens);
+
+    try testing.expectEqualStrings("line", tokens[0].asString());
+    try testing.expectEqualStrings(":", tokens[1].asString());
+    try testing.expectEqualStrings("this is a value", tokens[2].asString());
+    try testing.expectEqualStrings("\\n", tokens[3].asString());
+    try testing.expectEqualStrings("list", tokens[4].asString());
+    try testing.expectEqualStrings(":", tokens[5].asString());
+    try testing.expectEqualStrings("\\n", tokens[6].asString());
+    try testing.expectEqualStrings("\\t", tokens[7].asString());
+    try testing.expectEqualStrings("-", tokens[8].asString());
+    try testing.expectEqualStrings("prop", tokens[9].asString());
+    try testing.expectEqualStrings(":", tokens[10].asString());
+    try testing.expectEqualStrings("value1", tokens[11].asString());
+    try testing.expectEqualStrings("\\n", tokens[12].asString());
+    try testing.expectEqualStrings("\\t", tokens[13].asString());
+    try testing.expectEqualStrings("\\t", tokens[14].asString());
+    try testing.expectEqualStrings("other_prop", tokens[15].asString());
+    try testing.expectEqualStrings(":", tokens[16].asString());
+    try testing.expectEqualStrings("value2", tokens[17].asString());
+    try testing.expectEqualStrings("\\n", tokens[18].asString());
+    try testing.expectEqualStrings("\\t", tokens[19].asString());
+    try testing.expectEqualStrings("-", tokens[20].asString());
+    try testing.expectEqualStrings("prop", tokens[21].asString());
+    try testing.expectEqualStrings(":", tokens[22].asString());
+    try testing.expectEqualStrings("value3", tokens[23].asString());
+    try testing.expectEqualStrings("\\n", tokens[24].asString());
+    try testing.expectEqualStrings("\\t", tokens[25].asString());
+    try testing.expectEqualStrings("\\t", tokens[26].asString());
+    try testing.expectEqualStrings("other_prop", tokens[27].asString());
+    try testing.expectEqualStrings(":", tokens[28].asString());
+    try testing.expectEqualStrings("value4", tokens[29].asString());
+    try testing.expectEqualStrings("<EOF>", tokens[30].asString());
 }
