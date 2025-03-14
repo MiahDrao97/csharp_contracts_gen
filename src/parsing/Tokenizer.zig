@@ -168,12 +168,13 @@ pub const TokenIterator = struct {
 
     /// Next token (excludes EOF and comments)
     pub fn next(self: *TokenIterator) ?Token {
-        return self.inner.any(isParsableToken, false);
+        var moved: usize = 0;
+        return self.inner.filterNext(isParsableToken, &moved);
     }
 
     /// Peek at the next token (excludes EOF and comments)
     pub fn peek(self: *TokenIterator) ?Token {
-        return self.inner.any(isParsableToken, true);
+        return self.inner.any(isParsableToken);
     }
 
     /// Expect the next token to be a specific syntax symbol
@@ -346,7 +347,8 @@ fn tokenizeLine(
     // is this a multi-line value block or just a single line value?
     switch (next.?) {
         '|' => {
-            const block_tok: ?u8 = iter.any(isNonWhitespace, false);
+            var moved: usize = 0;
+            const block_tok: ?u8 = iter.filterNext(isNonWhitespace, &moved);
             log.debug("Encountered block value indicator '|', following by chomp style ({?c})", .{block_tok});
             try dumpTokens(self.arena.allocator(), tokens.items);
             indent_level.* += 1;
@@ -368,7 +370,8 @@ fn tokenizeLine(
             return .{ .block_value = .{ BlockStyle.literal, ChompStyle.clip } };
         },
         '>' => {
-            const block_tok: ?u8 = iter.any(isNonWhitespace, false);
+            var moved: usize = 0;
+            const block_tok: ?u8 = iter.filterNext(isNonWhitespace, &moved);
             log.debug("Encountered block value indicator '>', following by chomp style ({?c})", .{block_tok});
             try dumpTokens(self.arena.allocator(), tokens.items);
             indent_level.* += 1;
@@ -1043,8 +1046,6 @@ test "tokenize array" {
     try testing.expectEqualStrings("<EOF>", tokens[14].asString());
 }
 test "tokenize obj" {
-    testing.log_level = .debug;
-
     var tokenizer: Tokenizer = try .new(testing.allocator, .{});
     defer tokenizer.deinit();
 
