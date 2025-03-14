@@ -329,16 +329,13 @@ fn tokenizeLine(
     const lh_index: usize = try self.tokenizeKey(tokens, line, indent_level);
     // start reading the value
     log.debug("Finished reading key-->{s}\n    Now reading value-->{s}", .{ tokens.items[tokens.items.len - 2].asString(), line[lh_index..] });
+
     var iter: Iter(u8) = .from(line[lh_index..]);
-    var next: ?u8 = null;
+    var moved: usize = 0;
     // consume whitespace after the ':'
-    while (iter.next()) |byte| {
-        self.pos += 1;
-        if (isNonWhitespace(byte)) {
-            next = byte;
-            break;
-        }
-    }
+    const next: ?u8 = iter.filterNext(isNonWhitespace, &moved);
+    self.pos += moved;
+
     // this scenario means that we have a "key: \n" situation, which indicates this has to be an object or array
     if (next == null) {
         log.debug("Encountered early line termination. Determining this must be an array or object: Line {d}, pos {d}\n\t'{s}'", .{ self.line_no, self.pos, line });
@@ -347,7 +344,6 @@ fn tokenizeLine(
     // is this a multi-line value block or just a single line value?
     switch (next.?) {
         '|' => {
-            var moved: usize = 0;
             const block_tok: ?u8 = iter.filterNext(isNonWhitespace, &moved);
             log.debug("Encountered block value indicator '|', following by chomp style ({?c})", .{block_tok});
             try dumpTokens(self.arena.allocator(), tokens.items);
@@ -370,7 +366,6 @@ fn tokenizeLine(
             return .{ .block_value = .{ BlockStyle.literal, ChompStyle.clip } };
         },
         '>' => {
-            var moved: usize = 0;
             const block_tok: ?u8 = iter.filterNext(isNonWhitespace, &moved);
             log.debug("Encountered block value indicator '>', following by chomp style ({?c})", .{block_tok});
             try dumpTokens(self.arena.allocator(), tokens.items);
@@ -463,12 +458,13 @@ fn tokenizeLine(
             try dumpTokens(self.arena.allocator(), tokens.items);
 
             word = try .initCapacity(self.arena.allocator(), line.len);
-            while (iter.next()) |n| {
-                if (isNonWhitespace(n)) {
-                    word.append(self.arena.allocator(), n) catch unreachable;
-                    break;
-                }
+
+            moved = 0;
+            if (iter.filterNext(isNonWhitespace, &moved)) |n| {
+                word.append(self.arena.allocator(), n) catch unreachable;
             }
+            self.pos += moved;
+
             first = true;
             continue;
         }
@@ -757,7 +753,7 @@ const BlockSegment = struct {
     len: usize,
     folded_newline: bool,
 
-    pub fn segment(self: BlockSegment, slice: []const u8) []const u8 {
+    fn segment(self: BlockSegment, slice: []const u8) []const u8 {
         log.debug("Value to segment (offset: {d}, len: {d}): {s}", .{ self.offset, self.len, slice });
         if (self.len == 0 or slice.len <= self.offset + self.len) {
             return &[_]u8{};
