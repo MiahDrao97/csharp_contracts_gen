@@ -65,21 +65,21 @@ fn parseObjOrArray(
     node: *NodeMap,
     tokens: *TokenIterator,
     key: []const u8,
-    indent_depth: usize,
+    indent_depth: u16,
 ) Error!void {
     if (tokens.next()) |tok| {
         switch (tok) {
             .syntax => {
                 try tok.expectSyntax(.dash);
-                const nodes: []Node = try parseArray(allocator, tokens, indent_depth);
+                const nodes: []Node = try parseArray(allocator, tokens, indent_depth + 1);
                 errdefer allocator.free(nodes);
 
                 try node.put(allocator, key, Node{ .arr = nodes });
             },
             .string => |s| {
                 var new_obj: NodeMap = .init(allocator);
-
-                try parseObj(allocator, &new_obj, tokens, s, indent_depth);
+                // indicate tail recursion
+                try @call(.always_tail, parseObj, .{ allocator, &new_obj, tokens, s, indent_depth + 1 });
                 try node.put(allocator, key, Node{ .obj = new_obj });
             },
             else => return error.UnexpectedToken,
@@ -89,14 +89,44 @@ fn parseObjOrArray(
     }
 }
 
-fn parseArray(allocator: Allocator, tokens: *TokenIterator, indent_depth: usize) Error![]Node {
+fn parseArray(allocator: Allocator, tokens: *TokenIterator, indent_depth: u16) Error![]Node {
     var nodes: ArrayList(Node) = .init(allocator);
-    while (tokens.peek()) {
-        try tokens.expectedIndentLevel(indent_depth);
-        _ = try tokens.expectSyntax(.dash);
-
-        // parse node
+    while (tokens.peek()) |_| {
+        if (tokens.getIndentLevel(indent_depth) == indent_depth) {
+            _ = try tokens.expectSyntax(.dash);
+            try nodes.append(allocator, try parseNode(allocator, tokens, indent_depth));
+        } else break;
     }
 
     return try nodes.toOwnedSlice();
+}
+
+fn parseNode(allocator: Allocator, tokens: *TokenIterator, indent_depth: u16) Error!Node {
+    if (tokens.next()) |tok| {
+        switch (tok) {
+            .string => |str| return Node{ .value = str },
+            .syntax => |syn| switch (syn) {
+                .newline => {
+                    try tokens.expectedIndentLevel(indent_depth + 1);
+                    switch (tokens.peek() orelse return error.EOF) {
+                        .string => |_| {
+                            var obj: NodeMap = .empty;
+                            try @call(.always_tail, parseObj, .{ allocator, &obj, tokens, null, indent_depth + 1 });
+                            return Node{ .obj = obj };
+                        },
+                        .syntax => |x| switch (x) {
+                            .dash => {
+                                return Node{ .arr = try @call(.always_tail, parseArray, .{ allocator, tokens, indent_depth + 1 }) };
+                            },
+                            else => return error.UnexpectedToken,
+                        },
+                        else => return error.UnexpectedToken,
+                    }
+                },
+                else => return error.UnexpectedToken,
+            },
+            else => return error.UnexpectedToken,
+        }
+    }
+    return error.EOF;
 }

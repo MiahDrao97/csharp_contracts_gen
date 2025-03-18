@@ -178,17 +178,17 @@ pub const TokenIterator = struct {
     }
 
     /// Expect the next token to be a specific syntax symbol
-    pub fn expectSyntax(self: *TokenIterator, syntax: SyntaxToken) error{UnexpectedToken}!Token {
+    pub fn expectSyntax(self: *TokenIterator, syntax: SyntaxToken) error{ EOF, UnexpectedToken }!Token {
         if (self.peek()) |tok| {
             try tok.expectSyntax(syntax);
             _ = self.next();
             return tok;
         }
-        return error.UnexpectedToken;
+        return error.EOF;
     }
 
     /// Expect a specific indent level
-    pub fn expectedIndentLevel(self: *TokenIterator, indents: u16) error{UnexpectedToken}!void {
+    pub fn expectedIndentLevel(self: *TokenIterator, indents: u16) error{ EOF, UnexpectedToken }!void {
         var i: u16 = 1;
         while (i < indents) : (i += 1) {
             _ = try self.expectSyntax(.indent);
@@ -196,6 +196,20 @@ pub const TokenIterator = struct {
                 break;
             }
         }
+    }
+
+    /// Get the current indent level, consuming each tab token we encounter (assuming that we've consumed a newline token)
+    pub fn getIndentLevel(self: *TokenIterator) u16 {
+        var i: u16 = 0;
+        while (self.peek()) |next_tok| {
+            if (next_tok.isSyntax(.indent)) {
+                _ = self.next();
+                i += 1;
+                continue;
+            }
+            break;
+        }
+        return i;
     }
 
     /// De-initialize internal iterator, which results in this becoming empty
