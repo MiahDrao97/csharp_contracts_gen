@@ -11,10 +11,10 @@ const Iter = iter_z.Iter;
 const panic = std.debug.panicExtra;
 
 pub const Tokenizer = @import("Tokenizer.zig");
-pub const parser = @import("parser.zig");
+pub const Parser = @import("parser.zig");
 pub const Token = Tokenizer.Token;
 
-pub const Error = error{ InvalidFileExtension, ReadFileError } || Tokenizer.Error || parser.Error;
+pub const Error = error{ InvalidFileExtension, ReadFileError } || Tokenizer.Error || Parser.Error;
 
 /// Configuration on parsing
 pub const ParseConfig = struct {
@@ -45,12 +45,13 @@ pub fn parseYaml(allocator: Allocator, file_path: []const u8, config: ParseConfi
     defer line_iter.deinit();
 
     const tokens: []Token = try tokenizer.tokenize(&line_iter); // destroyed with the tokenizer
+    var parser: Parser = .init;
     return try parser.parse(allocator, tokens);
 }
 
 /// Represents a parsed schema-less YAML file
 pub const Parsed = struct {
-    root: Node,
+    root: NodeMap,
     arena: *ArenaAllocator,
     parent_alloc: Allocator,
 
@@ -61,7 +62,7 @@ pub const Parsed = struct {
 
         return Parsed{
             // root node is always an object
-            .root = Node{ .obj = .empty },
+            .root = .empty,
             .arena = arena,
             .parent_alloc = allocator,
         };
