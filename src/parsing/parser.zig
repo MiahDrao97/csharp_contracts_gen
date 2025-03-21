@@ -268,7 +268,7 @@ fn dumpNodeMap(obj: *const NodeMap) void {
                 .obj => |*o| innerDump(allocator, o, level + 1),
                 .value => |v| v,
                 .arr => |a| blk: {
-                    var str_arr: ArrayList(u8) = try .initCapacity(allocator, a.len);
+                    var str_arr: ArrayList(u8) = .empty;
                     for (a) |elem| {
                         try str_arr.appendSlice(allocator, try dumpNode(allocator, elem, level + 1));
                     }
