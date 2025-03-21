@@ -189,12 +189,12 @@ pub const TokenIterator = struct {
 
     /// Expect a specific indent level
     pub fn expectIndentLevel(self: *TokenIterator, indents: u16) error{ EOF, UnexpectedToken }!void {
-        var i: u16 = 1;
+        var i: u16 = 0;
         while (i < indents) : (i += 1) {
-            _ = try self.expectSyntax(.indent);
             if (i == indents) {
                 break;
             }
+            _ = try self.expectSyntax(.indent);
         }
     }
 

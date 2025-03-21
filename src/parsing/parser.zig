@@ -55,6 +55,7 @@ fn parseObj(
                     key = s;
                 } else if (expecting_newline_or_eof) {
                     log.err("Expecting newline or EOF, but found {s} (token[{d}])", .{ s, self.tok_idx });
+                    dumpNodeMap(node);
                     return error.UnexpectedToken;
                 } else if (!colon_found) {
                     log.err("Expecting colon after key, but found {s} (token[{d}])", .{ s, self.tok_idx });
@@ -125,25 +126,34 @@ fn parseObjOrArray(
         return err;
     };
     self.tok_idx += indent_depth;
-    if (tokens.next()) |tok| {
-        defer self.tok_idx += 1;
+    if (tokens.peek()) |tok| {
         switch (tok) {
             .syntax => |syn| {
                 tok.expectSyntax(.dash) catch |err| switch (err) {
                     error.UnexpectedToken => {
-                        log.err("Expected dash syntax but found {s} (token[{d}])", .{ @tagName(syn), self.tok_idx });
+                        log.err("Expected dash syntax but found {s} (token[{d}]). Next token: {s}", .{
+                            @tagName(syn),
+                            self.tok_idx,
+                            blk: {
+                                if (tokens.peek()) |t| break :blk t.asString() else break :blk "<EOF>";
+                            },
+                        });
                         return err;
                     }
                 };
-                const nodes: []Node = try self.parseArray(allocator, tokens, indent_depth + 1);
+                const nodes: []Node = try self.parseArray(allocator, tokens, indent_depth);
                 errdefer allocator.free(nodes);
 
                 try node.put(allocator, key, Node{ .arr = nodes });
             },
             .string => |s| {
+                // consume the token
+                _ = tokens.next();
+                self.tok_idx += 1;
+
                 var new_obj: NodeMap = .empty;
                 // indicate tail recursion
-                try self.parseObj(allocator, &new_obj, tokens, s, indent_depth + 1);
+                try self.parseObj(allocator, &new_obj, tokens, s, indent_depth);
                 try node.put(allocator, key, Node{ .obj = new_obj });
             },
             else => unreachable,
@@ -156,7 +166,18 @@ fn parseObjOrArray(
 fn parseArray(self: *Parser, allocator: Allocator, tokens: *TokenIterator, indent_depth: u16) Error![]Node {
     var nodes: ArrayList(Node) = .empty;
     errdefer nodes.deinit(allocator);
+    var first: bool = true;
     while (tokens.peek()) |_| {
+        if (first) {
+            first = false;
+            _ = try tokens.expectSyntax(.dash);
+            self.tok_idx += 1;
+            try nodes.append(allocator, try self.parseNode(allocator, tokens, indent_depth));
+            _ = try tokens.expectSyntax(.newline);
+            self.tok_idx += 1;
+            continue;
+        }
+
         const actual_indent_level: u16 = tokens.getIndentLevel();
         self.tok_idx += actual_indent_level;
         if (actual_indent_level == indent_depth) {
@@ -200,6 +221,70 @@ fn parseNode(self: *Parser, allocator: Allocator, tokens: *TokenIterator, indent
     return error.EOF;
 }
 
+fn dumpNodeMap(obj: *const NodeMap) void {
+    if ((@import("builtin").is_test and testing.log_level != .debug) or !std.log.logEnabled(.debug, .parser)) {
+        return;
+    }
+
+    var buf: [4096]u8 = undefined;
+    var stack_alloc: std.heap.FixedBufferAllocator = .init(&buf);
+
+    const ctx = struct {
+        fn innerDump(allocator: Allocator, inner_obj: *const NodeMap, level: u16) Allocator.Error![]const u8 {
+            var str_arr: ArrayList(u8) = .empty;
+            var inner_iter: NodeMap.Iterator = inner_obj.iter();
+            while (inner_iter.next()) |inner_kvp| {
+                if (level > 0) {
+                    try str_arr.appendNTimes(allocator, ' ', level * 2);
+                }
+                try str_arr.appendSlice(allocator, inner_kvp.@"0");
+                try str_arr.append(allocator, ':');
+                switch (inner_kvp.@"1".*) {
+                    .obj => |*o| {
+                        try str_arr.append(allocator, '\n');
+                        try str_arr.appendSlice(allocator, try innerDump(allocator, o, level + 1));
+                    },
+                    .value => |v| {
+                        try str_arr.append(allocator, ' ');
+                        try str_arr.appendSlice(allocator, v);
+                    },
+                    .arr => |a| {
+                        try str_arr.append(allocator, '\n');
+                        for (a) |elem| {
+                            try str_arr.appendNTimes(allocator, ' ', (level + 1) * 2);
+                            try str_arr.appendSlice(allocator, "- ");
+                            try str_arr.appendSlice(allocator, try dumpNode(allocator, elem, level + 1));
+                            try str_arr.append(allocator, '\n');
+                        }
+                    }
+                }
+                try str_arr.append(allocator, '\n');
+            }
+            return try str_arr.toOwnedSlice(allocator);
+        }
+
+        fn dumpNode(allocator: Allocator, inner_node: Node, level: u16) Allocator.Error![]const u8 {
+            return switch (inner_node) {
+                .obj => |*o| innerDump(allocator, o, level + 1),
+                .value => |v| v,
+                .arr => |a| blk: {
+                    var str_arr: ArrayList(u8) = try .initCapacity(allocator, a.len);
+                    for (a) |elem| {
+                        try str_arr.appendSlice(allocator, try dumpNode(allocator, elem, level + 1));
+                    }
+                    break :blk try str_arr.toOwnedSlice(allocator);
+                }
+            };
+        }
+    };
+
+    const result: []const u8 = ctx.innerDump(stack_alloc.allocator(), obj, 0) catch |err| {
+        log.warn("Could not dump node map due to buffer overflow: {s} -> {?}", .{ @errorName(err), @errorReturnTrace() });
+        return;
+    };
+    log.debug("Dumped node map:\n{s}", .{result});
+}
+
 test "parse simple object" {
     const tokens = [_]Token{
         .{ .string = "key" },
@@ -214,6 +299,7 @@ test "parse simple object" {
     try testing.expectEqualStrings("value", parsed.root.get("key").?.asValue().?);
 }
 test "parse array" {
+    testing.log_level = .debug;
     // arr:
     //   - item1
     //   - item2

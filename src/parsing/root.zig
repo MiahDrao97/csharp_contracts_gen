@@ -11,7 +11,7 @@ const Iter = iter_z.Iter;
 const panic = std.debug.panicExtra;
 
 pub const Tokenizer = @import("Tokenizer.zig");
-pub const Parser = @import("parser.zig");
+pub const Parser = @import("Parser.zig");
 pub const Token = Tokenizer.Token;
 
 pub const Error = error{ InvalidFileExtension, ReadFileError } || Tokenizer.Error || Parser.Error;
