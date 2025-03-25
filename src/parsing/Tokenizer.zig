@@ -290,7 +290,7 @@ pub fn tokenize(self: *Tokenizer, iter: *LineIterator) Error![]Token {
                             },
                             .keep => {
                                 if (block_value.@"0" == .folded) {
-                                    // kind of a naive solution, but if we encounter a bunch of trailing newlines in a folded block, they'd get replaced with n-1 spaces
+                                    // kind of a naive solution, but if we encounter a bunch of trailing spaces in a folded block, they'd get replaced with n-1 newlines
                                     var i: usize = 0;
                                     while (word.getLastOrNull() == ' ') {
                                         _ = word.pop();
@@ -473,7 +473,6 @@ fn tokenizeLine(
 
             word = try .initCapacity(self.arena.allocator(), line.len);
 
-            moved = 0;
             if (iter.filterNext(isNonWhitespace, &moved)) |n| {
                 word.append(self.arena.allocator(), n) catch unreachable;
             }
