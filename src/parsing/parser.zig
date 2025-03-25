@@ -46,7 +46,14 @@ fn parseObj(
     var key: ?[]const u8 = ext_key;
     var colon_found: bool = false;
     var expecting_newline_or_eof: bool = false;
-    try tokens.expectIndentLevel(indent_depth);
+    tokens.expectIndentLevel(indent_depth) catch |err| {
+        log.err("Expected indent level {d} but found '{s}' (tokens[{d}])", .{
+            indent_depth,
+            if (tokens.peek()) |t| t.asString() else "<EOF>",
+            self.tok_idx,
+        });
+        return err;
+    };
     while (tokens.next()) |tok| {
         defer self.tok_idx += 1;
         log.debug("Next token while parsing object: '{s}' (tokens[{d}])", .{ tok.asString(), self.tok_idx });
@@ -332,4 +339,34 @@ test "parse array" {
     try testing.expectEqual(2, arr.len);
     try testing.expectEqualStrings("item1", arr[0].asValue().?);
     try testing.expectEqualStrings("item2", arr[1].asValue().?);
+}
+test "parse object" {
+    // obj:
+    //   prop1: val1
+    //   prop2: val2
+    const tokens = [_]Token{
+        .{ .string = "obj" },
+        .{ .syntax = .colon },
+        .{ .syntax = .newline },
+        .{ .syntax = .indent },
+        .{ .string = "prop1" },
+        .{ .syntax = .colon },
+        .{ .string = "val1" },
+        .{ .syntax = .newline },
+        .{ .syntax = .indent },
+        .{ .string = "prop2" },
+        .{ .syntax = .colon },
+        .{ .string = "val2" },
+        .eof,
+    };
+
+    var parser: Parser = .init;
+    const parsed: Parsed = try parser.parse(testing.allocator, &tokens);
+    defer parsed.deinit();
+
+    var nested_obj: ?Node = parsed.root.get("obj");
+    try testing.expect(nested_obj != null);
+    try testing.expect(nested_obj.?.asObjPtr() != null);
+    try testing.expectEqualStrings("val1", nested_obj.?.asObjPtr().?.get("prop1").?.value);
+    try testing.expectEqualStrings("val2", nested_obj.?.asObjPtr().?.get("prop2").?.value);
 }
