@@ -46,14 +46,21 @@ fn parseObj(
     var key: ?[]const u8 = ext_key;
     var colon_found: bool = false;
     var expecting_newline_or_eof: bool = false;
-    tokens.expectIndentLevel(indent_depth) catch |err| {
-        log.err("Expected indent level {d} but found '{s}' (tokens[{d}])", .{
-            indent_depth,
-            if (tokens.peek()) |t| t.asString() else "<EOF>",
-            self.tok_idx,
-        });
-        return err;
-    };
+    var first: bool = true;
+    if (first) {
+        first = false;
+    } else {
+        expectIndentLevel(tokens, indent_depth) catch |err| {
+            log.err("Expected indent level {d} but found '{s}' (tokens[{d}])", .{
+                indent_depth,
+                if (tokens.peek()) |t| t.asString() else "<EOF>",
+                self.tok_idx,
+            });
+            dumpNodeMap(node);
+            return err;
+        };
+    }
+
     while (tokens.next()) |tok| {
         defer self.tok_idx += 1;
         log.debug("Next token while parsing object: '{s}' (tokens[{d}])", .{ tok.asString(), self.tok_idx });
@@ -77,17 +84,34 @@ fn parseObj(
                 }
             },
             .syntax => |syn| {
-                if (key != null and !colon_found) {
-                    tok.expectSyntax(.colon) catch |err| switch (err) {
+                if (key == null and !colon_found) {
+                    tok.expectSyntax(&.{.indent}) catch |err| switch (err) {
+                        error.UnexpectedToken => {
+                            log.err("Expected indent but found <{s}> syntax (token[{d}])", .{ @tagName(syn), self.tok_idx });
+                            return err;
+                        },
+                    };
+                    log.debug("Found indent, adjusting for indentation (tokens[{d}])", .{self.tok_idx});
+                    expectIndentLevel(tokens, indent_depth - 1) catch |err| {
+                        log.err("Expected indent level {d} but found '{s}' (tokens[{d}])", .{
+                            indent_depth - 1,
+                            if (tokens.peek()) |t| t.asString() else "<EOF>",
+                            self.tok_idx,
+                        });
+                        dumpNodeMap(node);
+                        return err;
+                    };
+                    self.tok_idx += indent_depth - 1;
+                } else if (key != null and !colon_found) {
+                    tok.expectSyntax(&.{.colon}) catch |err| switch (err) {
                         error.UnexpectedToken => {
                             log.err("Expected colon syntax but found {s} (token[{d}])", .{ @tagName(syn), self.tok_idx });
                             return err;
                         },
                     };
-                    colon_found = true;
-                    log.debug("Colon found (tokens[{d}])", .{self.tok_idx});
                 } else if (key != null and colon_found) {
-                    tok.expectSyntax(.newline) catch |err| switch (err) {
+                    log.debug("Key and colon found. Parsing newline... (tokens[{d}])", .{self.tok_idx});
+                    tok.expectSyntax(&.{.newline}) catch |err| switch (err) {
                         error.UnexpectedToken => {
                             log.err("Expected newline or string after colon but found {s} (token[{d}])", .{ @tagName(syn), self.tok_idx });
                             return err;
@@ -100,7 +124,7 @@ fn parseObj(
                     log.debug("Finished parsing array (tokens[{d}])", .{self.tok_idx});
                 } else if (expecting_newline_or_eof) {
                     // EOF is not a parsable token and would not be returned from `TokenIterator`
-                    tok.expectSyntax(.newline) catch |err| switch (err) {
+                    tok.expectSyntax(&.{.newline}) catch |err| switch (err) {
                         error.UnexpectedToken => {
                             log.err("Expected newline or EOF but found {s} (token[{d}])", .{ @tagName(syn), self.tok_idx });
                             return err;
@@ -108,7 +132,13 @@ fn parseObj(
                     };
                     expecting_newline_or_eof = false;
                 } else {
-                    log.err("Found unexpected syntax {s}. Was expecting string token (token[{d}])", .{ @tagName(syn), self.tok_idx });
+                    log.err("Found unexpected syntax <{s}>. Found key is '{s}', colon found: {any}, expecting newline/EOF: {any} -> Was expecting string token (token[{d}])", .{
+                        @tagName(syn),
+                        key orelse "<null>",
+                        colon_found,
+                        expecting_newline_or_eof,
+                        self.tok_idx,
+                    });
                     return error.UnexpectedToken;
                 }
             },
@@ -129,7 +159,7 @@ fn parseObjOrArray(
     key: []const u8,
     indent_depth: u16,
 ) Error!void {
-    tokens.expectIndentLevel(indent_depth) catch |err| {
+    expectIndentLevel(tokens, indent_depth) catch |err| {
         switch (err) {
             error.UnexpectedToken => log.err("Did not find indent level {d},", .{indent_depth}),
             error.EOF => log.err("Encountered EOF while expecting indent level {d}.", .{indent_depth}),
@@ -140,7 +170,7 @@ fn parseObjOrArray(
     if (tokens.peek()) |tok| {
         switch (tok) {
             .syntax => |syn| {
-                tok.expectSyntax(.dash) catch |err| switch (err) {
+                tok.expectSyntax(&.{.dash}) catch |err| switch (err) {
                     error.UnexpectedToken => {
                         log.err("Expected dash syntax but found {s} (token[{d}]). Next token: {s}", .{
                             @tagName(syn),
@@ -150,18 +180,18 @@ fn parseObjOrArray(
                         return err;
                     }
                 };
+                log.debug("Found dash token. Inferring array type (tokens[{d}])", .{self.tok_idx});
                 const nodes: []Node = try self.parseArray(allocator, tokens, indent_depth);
                 errdefer allocator.free(nodes);
 
                 try node.put(allocator, key, Node{ .arr = nodes });
             },
             .string => |s| {
-                // consume the token
+                log.debug("Found string token '{s}'. Inferring object type (tokens[{d}])", .{ s, self.tok_idx });
+                // consume token
                 _ = tokens.next();
-                self.tok_idx += 1;
 
                 var new_obj: NodeMap = .empty;
-                // indicate tail recursion
                 try self.parseObj(allocator, &new_obj, tokens, s, indent_depth);
                 try node.put(allocator, key, Node{ .obj = new_obj });
             },
@@ -179,10 +209,10 @@ fn parseArray(self: *Parser, allocator: Allocator, tokens: *TokenIterator, inden
     while (tokens.peek()) |_| {
         if (first) {
             first = false;
-            _ = try tokens.expectSyntax(.dash);
+            _ = try tokens.expectSyntax(&.{.dash});
             self.tok_idx += 1;
             try nodes.append(allocator, try self.parseNode(allocator, tokens, indent_depth));
-            _ = try tokens.expectSyntax(.newline);
+            _ = try tokens.expectSyntax(&.{.newline});
             self.tok_idx += 1;
             continue;
         }
@@ -190,7 +220,7 @@ fn parseArray(self: *Parser, allocator: Allocator, tokens: *TokenIterator, inden
         const actual_indent_level: u16 = tokens.getIndentLevel();
         self.tok_idx += actual_indent_level;
         if (actual_indent_level == indent_depth) {
-            _ = try tokens.expectSyntax(.dash);
+            _ = try tokens.expectSyntax(&.{.dash});
             self.tok_idx += 1;
             try nodes.append(allocator, try self.parseNode(allocator, tokens, indent_depth));
         } else break;
@@ -206,7 +236,7 @@ fn parseNode(self: *Parser, allocator: Allocator, tokens: *TokenIterator, indent
             .string => |str| return Node{ .value = str },
             .syntax => |syn| switch (syn) {
                 .newline => {
-                    try tokens.expectIndentLevel(indent_depth + 1);
+                    try expectIndentLevel(tokens, indent_depth + 1);
                     switch (tokens.peek() orelse return error.EOF) {
                         .string => |_| {
                             var obj: NodeMap = .empty;
@@ -228,6 +258,24 @@ fn parseNode(self: *Parser, allocator: Allocator, tokens: *TokenIterator, indent
         }
     }
     return error.EOF;
+}
+
+/// Expect a specific indent level
+fn expectIndentLevel(self: *TokenIterator, indents: u16) error{ EOF, UnexpectedToken }!void {
+    var i: u16 = 0;
+    while (i < indents) : (i += 1) {
+        if (i == indents) {
+            break;
+        }
+        _ = self.expectSyntax(&.{.indent}) catch |err| {
+            log.err("Expected {d} indents, but found {d}. Current token: '{s}'", .{
+                indents,
+                i,
+                if (self.peek()) |t| t.asString() else "<EOF>",
+            });
+            return err;
+        };
+    }
 }
 
 fn dumpNodeMap(obj: *const NodeMap) void {
@@ -274,7 +322,7 @@ fn dumpNodeMap(obj: *const NodeMap) void {
 
         fn dumpNode(allocator: Allocator, inner_node: Node, level: u16) Allocator.Error![]const u8 {
             return switch (inner_node) {
-                .obj => |*o| innerDump(allocator, o, level + 1),
+                .obj => |*o| try innerDump(allocator, o, level + 1),
                 .value => |v| v,
                 .arr => |a| blk: {
                     var str_arr: ArrayList(u8) = .empty;
@@ -341,6 +389,7 @@ test "parse array" {
     try testing.expectEqualStrings("item2", arr[1].asValue().?);
 }
 test "parse object" {
+    testing.log_level = .debug;
     // obj:
     //   prop1: val1
     //   prop2: val2

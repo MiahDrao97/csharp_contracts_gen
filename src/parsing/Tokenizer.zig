@@ -48,10 +48,10 @@ pub const Token = union(enum) {
     eof,
 
     /// Expecting syntax for a specific token or return `error.UnexpectedToken`
-    pub fn expectSyntax(self: Token, syntax: SyntaxToken) error{UnexpectedToken}!void {
+    pub fn expectSyntax(self: Token, syntax: []const SyntaxToken) error{UnexpectedToken}!void {
         switch (self) {
             .syntax => |s| {
-                if (s != syntax) {
+                if (!std.mem.containsAtLeastScalar(SyntaxToken, syntax, 1, s)) {
                     return error.UnexpectedToken;
                 }
             },
@@ -178,24 +178,13 @@ pub const TokenIterator = struct {
     }
 
     /// Expect the next token to be a specific syntax symbol
-    pub fn expectSyntax(self: *TokenIterator, syntax: SyntaxToken) error{ EOF, UnexpectedToken }!Token {
+    pub fn expectSyntax(self: *TokenIterator, syntax: []const SyntaxToken) error{ EOF, UnexpectedToken }!Token {
         if (self.peek()) |tok| {
             try tok.expectSyntax(syntax);
             _ = self.next();
             return tok;
         }
         return error.EOF;
-    }
-
-    /// Expect a specific indent level
-    pub fn expectIndentLevel(self: *TokenIterator, indents: u16) error{ EOF, UnexpectedToken }!void {
-        var i: u16 = 0;
-        while (i < indents) : (i += 1) {
-            if (i == indents) {
-                break;
-            }
-            _ = try self.expectSyntax(.indent);
-        }
     }
 
     /// Get the current indent level, consuming each tab token we encounter (assuming that we've consumed a newline token)
