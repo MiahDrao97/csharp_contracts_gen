@@ -63,7 +63,7 @@
         },
         .iter_z = .{
             .url = "https://github.com/MiahDrao97/iter_z/archive/main.tar.gz",
-            .hash = "iter_z-0.0.0-nIKkxibWAQBZhNM11LTJhxBcJgEf2_kV3Ttq37gqCAVa",
+            .hash = "iter_z-0.0.0-nIKkxiDWAQBF53vWzL62a7GJ3BbJUgDB1Vd-I7y8a2PG",
         },
     },
 

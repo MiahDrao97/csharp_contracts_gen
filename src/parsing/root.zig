@@ -229,7 +229,7 @@ pub const Node = union(enum) {
                         }
 
                         const ElemType = array_info.child;
-                        var arr = [_]ElemType{undefined} ** array_info.len;
+                        var arr: [array_info.len]ElemType = @splat(undefined);
                         for (a, 0..) |node, i| {
                             arr[i] = switch (@typeInfo(ElemType)) {
                                 .optional => try node.projectTo(ElemType, allocator),
@@ -292,7 +292,7 @@ pub const NodeMap = struct {
         pub fn next(self: *Iterator) ?struct { []const u8, *Node } {
             const next_node_primitive: ?HashMap.Entry = self.inner.next();
             if (next_node_primitive) |n| {
-                const key: []const u8 = mem.sliceTo(self.map.keys_packed.items[@as(usize, n.value_ptr.offset)..], 0);
+                const key: []const u8 = mem.sliceTo(self.map.keys_packed.items[n.value_ptr.offset..], 0);
                 return .{ key, &n.value_ptr.node };
             }
             return null;
