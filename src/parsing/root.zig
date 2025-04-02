@@ -23,7 +23,7 @@ pub const ParseConfig = struct {
 };
 
 /// Open a YAML file, parse it, and return `Parsed`
-pub fn parseYaml(allocator: Allocator, file_path: []const u8, config: ParseConfig) Error!Parsed {
+pub fn parseYaml(allocator: Allocator, file_path: []const u8, config: ParseConfig) Error!ParsedYml {
     if (!mem.endsWith(u8, ".yml", file_path) or !mem.endsWith(u8, ".yaml", file_path)) {
         return error.InvalidFileExtension;
     }
@@ -50,31 +50,23 @@ pub fn parseYaml(allocator: Allocator, file_path: []const u8, config: ParseConfi
 }
 
 /// Represents a parsed schema-less YAML file
-pub const Parsed = struct {
+pub const ParsedYml = struct {
+    // root node is always an object
     root: NodeMap,
-    arena: *ArenaAllocator,
-    parent_alloc: Allocator,
+    arena: ArenaAllocator,
 
     /// Initialize new `Parsed` structure with a new arena.
-    pub fn new(allocator: Allocator) Allocator.Error!Parsed {
-        const arena: *ArenaAllocator = try allocator.create(ArenaAllocator);
-        arena.* = .init(allocator);
-
-        return Parsed{
-            // root node is always an object
+    pub fn init(allocator: Allocator) ParsedYml {
+        return .{
             .root = .empty,
-            .arena = arena,
-            .parent_alloc = allocator,
+            .arena = ArenaAllocator.init(allocator),
         };
     }
 
     /// Free associated memory
-    pub fn deinit(self: Parsed) void {
-        const arena_ptr: *ArenaAllocator = self.arena;
-        const alloc: Allocator = self.parent_alloc;
-
+    pub fn deinit(self: *ParsedYml) void {
         self.arena.deinit();
-        alloc.destroy(arena_ptr);
+        self.* = undefined;
     }
 };
 

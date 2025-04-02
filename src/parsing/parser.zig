@@ -5,7 +5,7 @@ const Tokenizer = @import("Tokenizer.zig");
 const Token = Tokenizer.Token;
 const SyntaxToken = Tokenizer.SyntaxToken;
 const TokenIterator = Tokenizer.TokenIterator;
-const Parsed = root.Parsed;
+const ParsedYml = root.ParsedYml;
 const Node = root.Node;
 const Iter = iter_z.Iter;
 const Allocator = std.mem.Allocator;
@@ -22,11 +22,11 @@ pub const Error = error{ EOF, UnexpectedToken, InvalidKey } || Allocator.Error;
 
 pub const init: Parser = .{ .tok_idx = 0 };
 
-/// Parse tokens, resulting in a `Parsed` structure
-pub fn parse(self: *Parser, allocator: Allocator, tokens: []const Token) Error!Parsed {
+/// Parse tokens, resulting in a `ParsedYml` structure
+pub fn parse(self: *Parser, allocator: Allocator, tokens: []const Token) Error!ParsedYml {
     self.tok_idx = 0;
 
-    var parsed: Parsed = try .new(allocator);
+    var parsed: ParsedYml = .init(allocator);
     errdefer parsed.deinit();
 
     var iter = TokenIterator{ .inner = Iter(Token).from(tokens) };
@@ -353,7 +353,7 @@ test "parse simple object" {
         .eof,
     };
     var parser: Parser = .init;
-    const parsed: Parsed = try parser.parse(testing.allocator, &tokens);
+    var parsed: ParsedYml = try parser.parse(testing.allocator, &tokens);
     defer parsed.deinit();
 
     try testing.expectEqualStrings("value", parsed.root.get("key").?.asValue().?);
@@ -382,7 +382,7 @@ test "parse array" {
     };
 
     var parser: Parser = .init;
-    const parsed: Parsed = try parser.parse(testing.allocator, &tokens);
+    var parsed: ParsedYml = try parser.parse(testing.allocator, &tokens);
     defer parsed.deinit();
 
     try testing.expectEqualStrings("value", parsed.root.get("key").?.asValue().?);
@@ -412,7 +412,7 @@ test "parse object" {
     };
 
     var parser: Parser = .init;
-    const parsed: Parsed = try parser.parse(testing.allocator, &tokens);
+    var parsed: ParsedYml = try parser.parse(testing.allocator, &tokens);
     defer parsed.deinit();
 
     var nested_obj: ?Node = parsed.root.get("obj");
