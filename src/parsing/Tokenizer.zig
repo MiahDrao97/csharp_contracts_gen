@@ -21,9 +21,7 @@ pos: usize = 0,
 /// Configuration for parsing
 config: ParseConfig,
 /// Arena allocator
-arena: *ArenaAllocator,
-/// Parent of the arena allocator
-parent_alloc: Allocator,
+arena: ArenaAllocator,
 
 pub const Tokenizer = @This();
 
@@ -208,13 +206,9 @@ pub const TokenIterator = struct {
 };
 
 /// Initialize wew tokenizer
-pub fn new(allocator: Allocator, config: ParseConfig) Allocator.Error!Tokenizer {
-    const arena: *ArenaAllocator = try allocator.create(ArenaAllocator);
-    arena.* = .init(allocator);
-
-    return Tokenizer{
-        .arena = arena,
-        .parent_alloc = allocator,
+pub fn init(allocator: Allocator, config: ParseConfig) Tokenizer {
+    return .{
+        .arena = ArenaAllocator.init(allocator),
         .config = config,
     };
 }
@@ -728,12 +722,9 @@ fn tokenizeBlock(
 
 /// The returned tokens are owned by this tokenizer's arena.
 /// Keep in mind that freeing this tokenizer's arena will result in the tokens being freed as well.
-pub fn deinit(self: Tokenizer) void {
-    const arena_ptr: *ArenaAllocator = self.arena;
-    const alloc: Allocator = self.parent_alloc;
-
+pub fn deinit(self: *Tokenizer) void {
     self.arena.deinit();
-    alloc.destroy(arena_ptr);
+    self.* = undefined;
 }
 
 /// Instead of de-initializing everything, can reset the backing arena
@@ -769,7 +760,7 @@ const BlockSegment = struct {
 // test cases needed:
 // Block values with all the various block/chomp styles
 test "tokenize literal block, clip style" {
-    var tokenizer: Tokenizer = try .new(testing.allocator, .{});
+    var tokenizer: Tokenizer = .init(testing.allocator, .{});
     defer tokenizer.deinit();
 
     const yaml =
@@ -807,7 +798,7 @@ test "tokenize literal block, clip style" {
     try testing.expectEqualStrings("<EOF>", tokens[7].asString());
 }
 test "tokenize literal block, strip style" {
-    var tokenizer: Tokenizer = try .new(testing.allocator, .{});
+    var tokenizer: Tokenizer = .init(testing.allocator, .{});
     defer tokenizer.deinit();
 
     const yaml =
@@ -845,7 +836,7 @@ test "tokenize literal block, strip style" {
     try testing.expectEqualStrings("<EOF>", tokens[7].asString());
 }
 test "tokenize literal block, keep style" {
-    var tokenizer: Tokenizer = try .new(testing.allocator, .{});
+    var tokenizer: Tokenizer = .init(testing.allocator, .{});
     defer tokenizer.deinit();
 
     const yaml =
@@ -885,7 +876,7 @@ test "tokenize literal block, keep style" {
     try testing.expectEqualStrings("<EOF>", tokens[7].asString());
 }
 test "tokenize folded block, clip style" {
-    var tokenizer: Tokenizer = try .new(testing.allocator, .{});
+    var tokenizer: Tokenizer = .init(testing.allocator, .{});
     defer tokenizer.deinit();
 
     const yaml =
@@ -923,7 +914,7 @@ test "tokenize folded block, clip style" {
     try testing.expectEqualStrings("<EOF>", tokens[7].asString());
 }
 test "tokenize folded block, strip style" {
-    var tokenizer: Tokenizer = try .new(testing.allocator, .{});
+    var tokenizer: Tokenizer = .init(testing.allocator, .{});
     defer tokenizer.deinit();
 
     const yaml =
@@ -961,7 +952,7 @@ test "tokenize folded block, strip style" {
     try testing.expectEqualStrings("<EOF>", tokens[7].asString());
 }
 test "tokenize folded block, keep style" {
-    var tokenizer: Tokenizer = try .new(testing.allocator, .{});
+    var tokenizer: Tokenizer = .init(testing.allocator, .{});
     defer tokenizer.deinit();
 
     const yaml =
@@ -1001,7 +992,7 @@ test "tokenize folded block, keep style" {
     try testing.expectEqualStrings("<EOF>", tokens[7].asString());
 }
 test "tokenize array" {
-    var tokenizer: Tokenizer = try .new(testing.allocator, .{});
+    var tokenizer: Tokenizer = .init(testing.allocator, .{});
     defer tokenizer.deinit();
 
     const yaml =
@@ -1044,7 +1035,7 @@ test "tokenize array" {
     try testing.expectEqualStrings("<EOF>", tokens[14].asString());
 }
 test "tokenize obj" {
-    var tokenizer: Tokenizer = try .new(testing.allocator, .{});
+    var tokenizer: Tokenizer = .init(testing.allocator, .{});
     defer tokenizer.deinit();
 
     const yaml =
@@ -1089,7 +1080,7 @@ test "tokenize obj" {
     try testing.expectEqualStrings("<EOF>", tokens[16].asString());
 }
 test "tokenize list of objects" {
-    var tokenizer: Tokenizer = try .new(testing.allocator, .{});
+    var tokenizer: Tokenizer = .init(testing.allocator, .{});
     defer tokenizer.deinit();
 
     const yaml =

@@ -9,6 +9,7 @@ const ArrayList = std.ArrayListUnmanaged;
 const ArrayHashMap = std.ArrayHashMapUnmanaged;
 const Iter = iter_z.Iter;
 const panic = std.debug.panicExtra;
+const log = std.log.scoped(.parsing_root);
 
 pub const Tokenizer = @import("Tokenizer.zig");
 pub const Parser = @import("Parser.zig");
@@ -28,13 +29,13 @@ pub fn parseYaml(allocator: Allocator, file_path: []const u8, config: ParseConfi
         return error.InvalidFileExtension;
     }
 
-    var tokenizer: Tokenizer = try .new(allocator, config);
+    var tokenizer: Tokenizer = .init(allocator, config);
     defer tokenizer.deinit(); // this deinit() call will destroy the resulting tokens as well
 
     var out_buf: [4096]u8 = undefined;
     var line_iter: LineIterator = .{
         .live = zul.fs.readLines(file_path, &out_buf, .{}) catch |err| {
-            std.log.err("Encountered error {s} while reading lines from file {s} -> {?}", .{
+            log.err("Encountered error {s} while reading lines from file {s} -> {?}", .{
                 @errorName(err),
                 file_path,
                 @errorReturnTrace(),
@@ -257,7 +258,7 @@ pub const NodeMap = struct {
     const StringHash = enum(u32) {
         _,
 
-        pub const Context = struct {
+        const Context = struct {
             pub fn hash(_: Context, k: StringHash) u32 {
                 // this already repesents a hash, so just return the u32 value
                 return @intFromEnum(k);
@@ -268,7 +269,7 @@ pub const NodeMap = struct {
             }
         };
 
-        pub fn from(k: []const u8) StringHash {
+        fn from(k: []const u8) StringHash {
             return @enumFromInt(std.hash.CityHash32.hash(k));
         }
     };
