@@ -751,7 +751,7 @@ const BlockSegment = struct {
         if (self.len == 0 or slice.len <= self.offset + self.len) {
             return &[_]u8{};
         }
-        const ret: []const u8 = slice[self.offset .. self.offset + self.len];
+        const ret: []const u8 = slice[self.offset..][0..self.len];
         log.debug("    Returning segment-->{s}<--", .{ret});
         return ret;
     }
