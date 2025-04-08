@@ -51,9 +51,9 @@ fn parseObj(
         first = false;
     } else {
         expectIndentLevel(tokens, indent_depth) catch |err| {
-            log.err("Expected indent level {d} but found '{s}' (tokens[{d}])", .{
+            log.err("Expected indent level {d} but found '{any}' (tokens[{d}])", .{
                 indent_depth,
-                if (tokens.peek()) |t| t.asString() else "<EOF>",
+                tokens.peek() orelse .eof,
                 self.tok_idx,
             });
             dumpNodeMap(node);
@@ -63,7 +63,7 @@ fn parseObj(
 
     while (tokens.next()) |tok| {
         defer self.tok_idx += 1;
-        log.debug("Next token while parsing object: '{s}' (tokens[{d}])", .{ tok.asString(), self.tok_idx });
+        log.debug("Next token while parsing object: '{s}' (tokens[{d}])", .{ tok, self.tok_idx });
         switch (tok) {
             .string => |s| {
                 if (key == null) {
@@ -104,9 +104,9 @@ fn parseObj(
                     };
                     log.debug("Found indent, adjusting for indentation (tokens[{d}])", .{self.tok_idx});
                     expectIndentLevel(tokens, indent_depth - 1) catch |err| {
-                        log.err("Expected indent level {d} but found '{s}' (tokens[{d}])", .{
+                        log.err("Expected indent level {d} but found '{any}' (tokens[{d}])", .{
                             indent_depth - 1,
-                            if (tokens.peek()) |t| t.asString() else "<EOF>",
+                            tokens.peek() orelse .eof,
                             self.tok_idx,
                         });
                         dumpNodeMap(node);
@@ -175,10 +175,10 @@ fn parseObjOrArray(
             .syntax => |syn| {
                 tok.expectSyntax(&[_]SyntaxToken{.dash}) catch |err| switch (err) {
                     error.UnexpectedToken => {
-                        log.err("Expected dash syntax but found {s} (token[{d}]). Next token: {s}", .{
+                        log.err("Expected dash syntax but found {any} (token[{d}]). Next token: {s}", .{
                             @tagName(syn),
                             self.tok_idx,
-                            if (tokens.peek()) |t| t.asString() else "<EOF>",
+                            tokens.peek() orelse .eof,
                         });
                         return err;
                     }
@@ -271,10 +271,10 @@ fn expectIndentLevel(self: *TokenIterator, indents: u16) error{ EOF, UnexpectedT
             break;
         }
         _ = self.expectSyntax(&[_]SyntaxToken{.indent}) catch |err| {
-            log.err("Expected {d} indents, but found {d}. Current token: '{s}'", .{
+            log.err("Expected {d} indents, but found {d}. Current token: '{any}'", .{
                 indents,
                 i,
-                if (self.peek()) |t| t.asString() else "<EOF>",
+                self.peek() orelse .eof,
             });
             return err;
         };

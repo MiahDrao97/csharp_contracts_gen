@@ -73,6 +73,10 @@ pub const Token = union(enum) {
         };
     }
 
+    pub fn format(self: Token, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+        try writer.print("{s}", .{self.asString()});
+    }
+
     pub fn asString(self: Token) []const u8 {
         return switch (self) {
             .string => |str| str,
@@ -100,10 +104,10 @@ fn dumpTokens(allocator: Allocator, tokens: []Token) Allocator.Error!void {
     var buf: [256]u8 = undefined;
     for (tokens) |tok| {
         if (first) {
-            try dump.appendSlice(allocator, std.fmt.bufPrint(&buf, "{s}", .{tok.asString()}) catch unreachable);
+            try dump.appendSlice(allocator, std.fmt.bufPrint(&buf, "{any}", .{tok}) catch unreachable);
             first = false;
         } else {
-            try dump.appendSlice(allocator, std.fmt.bufPrint(&buf, ", {s}", .{tok.asString()}) catch unreachable);
+            try dump.appendSlice(allocator, std.fmt.bufPrint(&buf, ", {any}", .{tok}) catch unreachable);
         }
     }
     try dump.appendSlice(allocator, " ]");
@@ -325,7 +329,7 @@ fn tokenizeLine(
     // tokenize the key first
     const lh_index: usize = try self.tokenizeKey(tokens, line, indent_level);
     // start reading the value
-    log.debug("Finished reading key-->{s}\n    Now reading value-->{s}", .{ tokens.items[tokens.items.len - 2].asString(), line[lh_index..] });
+    log.debug("Finished reading key-->{s}\n    Now reading value-->{s}", .{ tokens.items[tokens.items.len - 2], line[lh_index..] });
 
     var iter: Iter(u8) = .from(line[lh_index..]);
     var moved: usize = 0;
@@ -495,6 +499,10 @@ fn tokenizeLine(
                 }
             },
         }
+        // remove first and last to kill off the quotes
+        const q1: u8 = word.swapRemove(0); // kills first quotes and swaps with last element (which is the other quote)
+        const q2: u8 = word.orderedRemove(0);
+        assert(q1 == q2);
     }
 
     log.debug("Appending value-->{s}", .{word.items});
@@ -588,6 +596,7 @@ fn tokenizeKey(
 
 /// Tokenize block values
 /// For reference: https://yaml-multiline.info/
+/// TODO : Quotes are allowed around blocks
 fn tokenizeBlock(
     self: *Tokenizer,
     lines: *LineIterator,
@@ -1125,4 +1134,62 @@ test "tokenize list of objects" {
     try testing.expectEqualStrings(":", tokens[28].asString());
     try testing.expectEqualStrings("value4", tokens[29].asString());
     try testing.expectEqualStrings("<EOF>", tokens[30].asString());
+}
+test "tokenize with single-quote value" {
+    var tokenizer: Tokenizer = .init(testing.allocator, .{});
+    defer tokenizer.deinit();
+
+    const yaml =
+        \\$ref: '#/components/models/MyModel'
+    ;
+
+    var arena: ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+
+    var line_iter: LineIterator = .initTest(
+        arena.allocator(),
+        Iter(u8).from(yaml),
+    );
+    defer line_iter.deinit();
+
+    const tokens: []Token = try tokenizer.tokenize(&line_iter);
+    testing.expectEqual(4, tokens.len) catch |err| {
+        testing.log_level = .debug;
+        try dumpTokens(testing.allocator, tokens);
+        return err;
+    };
+
+    try testing.expectEqualStrings("$ref", tokens[0].asString());
+    try testing.expectEqualStrings(":", tokens[1].asString());
+    try testing.expectEqualStrings("#/components/models/MyModel", tokens[2].asString()); // single quotes should vanish
+    try testing.expectEqualStrings("<EOF>", tokens[3].asString());
+}
+test "tokenize with double-quote value" {
+    var tokenizer: Tokenizer = .init(testing.allocator, .{});
+    defer tokenizer.deinit();
+
+    const yaml =
+        \\$ref: "#/components/models/MyModel"
+    ;
+
+    var arena: ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+
+    var line_iter: LineIterator = .initTest(
+        arena.allocator(),
+        Iter(u8).from(yaml),
+    );
+    defer line_iter.deinit();
+
+    const tokens: []Token = try tokenizer.tokenize(&line_iter);
+    testing.expectEqual(4, tokens.len) catch |err| {
+        testing.log_level = .debug;
+        try dumpTokens(testing.allocator, tokens);
+        return err;
+    };
+
+    try testing.expectEqualStrings("$ref", tokens[0].asString());
+    try testing.expectEqualStrings(":", tokens[1].asString());
+    try testing.expectEqualStrings("#/components/models/MyModel", tokens[2].asString()); // single quotes should vanish
+    try testing.expectEqualStrings("<EOF>", tokens[3].asString());
 }
