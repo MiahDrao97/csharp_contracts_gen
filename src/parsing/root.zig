@@ -25,7 +25,8 @@ pub const ParseConfig = struct {
 
 /// Open a YAML file, parse it, and return `Parsed`
 pub fn parseYaml(allocator: Allocator, file_path: []const u8, config: ParseConfig) Error!ParsedYml {
-    if (!mem.endsWith(u8, ".yml", file_path) or !mem.endsWith(u8, ".yaml", file_path)) {
+    if (!(mem.endsWith(u8, file_path, ".yml") or mem.endsWith(u8, file_path, ".yaml"))) {
+        log.err("Cannot open non-YAML file '{s}'", .{file_path});
         return error.InvalidFileExtension;
     }
 
@@ -33,8 +34,8 @@ pub fn parseYaml(allocator: Allocator, file_path: []const u8, config: ParseConfi
     defer tokenizer.deinit(); // this deinit() call will destroy the resulting tokens as well
 
     var out_buf: [4096]u8 = undefined;
-    var line_iter: LineIterator = .{
-        .live = zul.fs.readLines(file_path, &out_buf, .{}) catch |err| {
+    var line_iter: LineIterator = .init(
+        zul.fs.readLines(file_path, &out_buf, .{}) catch |err| {
             log.err("Encountered error {s} while reading lines from file {s} -> {?}", .{
                 @errorName(err),
                 file_path,
@@ -42,7 +43,7 @@ pub fn parseYaml(allocator: Allocator, file_path: []const u8, config: ParseConfi
             });
             return error.ReadFileError;
         },
-    };
+    );
     defer line_iter.deinit();
 
     const tokens: []Token = try tokenizer.tokenize(&line_iter); // destroyed with the tokenizer
@@ -531,6 +532,16 @@ pub const LineIterator = union(enum) {
     live: zul.fs.LineIterator,
     @"test": struct { allocator: Allocator, iter: Iter(u8) },
 
+    pub fn init(iter: zul.fs.LineIterator) LineIterator {
+        return .{ .live = iter };
+    }
+
+    pub fn initTest(allocator: Allocator, iter: Iter(u8)) LineIterator {
+        return .{
+            .@"test" = .{ .allocator = allocator, .iter = iter },
+        };
+    }
+
     pub fn deinit(self: *LineIterator) void {
         switch (self.*) {
             .live => |l| l.deinit(),
@@ -560,3 +571,12 @@ pub const LineIterator = union(enum) {
         }
     }
 };
+
+test "parse with live file" {
+    testing.log_level = .debug;
+    const file: []const u8 = "./fixtures/test.yaml";
+    var parsed: ParsedYml = try parseYaml(testing.allocator, file, .{});
+    defer parsed.deinit();
+
+    testing.log_level = .info;
+}

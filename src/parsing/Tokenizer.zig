@@ -774,12 +774,10 @@ test "tokenize literal block, clip style" {
     var arena: ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
 
-    var line_iter: LineIterator = .{
-        .@"test" = .{
-            .allocator = arena.allocator(),
-            .iter = .from(yaml),
-        },
-    };
+    var line_iter: LineIterator = .initTest(
+        arena.allocator(),
+        Iter(u8).from(yaml),
+    );
     defer line_iter.deinit();
 
     const tokens: []Token = try tokenizer.tokenize(&line_iter);
@@ -812,12 +810,10 @@ test "tokenize literal block, strip style" {
     var arena: ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
 
-    var line_iter: LineIterator = .{
-        .@"test" = .{
-            .allocator = arena.allocator(),
-            .iter = .from(yaml),
-        },
-    };
+    var line_iter: LineIterator = .initTest(
+        arena.allocator(),
+        Iter(u8).from(yaml),
+    );
     defer line_iter.deinit();
 
     const tokens: []Token = try tokenizer.tokenize(&line_iter);
@@ -852,12 +848,10 @@ test "tokenize literal block, keep style" {
     var arena: ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
 
-    var line_iter: LineIterator = .{
-        .@"test" = .{
-            .allocator = arena.allocator(),
-            .iter = .from(yaml),
-        },
-    };
+    var line_iter: LineIterator = .initTest(
+        arena.allocator(),
+        Iter(u8).from(yaml),
+    );
     defer line_iter.deinit();
 
     const tokens: []Token = try tokenizer.tokenize(&line_iter);
@@ -890,12 +884,10 @@ test "tokenize folded block, clip style" {
     var arena: ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
 
-    var line_iter: LineIterator = .{
-        .@"test" = .{
-            .allocator = arena.allocator(),
-            .iter = .from(yaml),
-        },
-    };
+    var line_iter: LineIterator = .initTest(
+        arena.allocator(),
+        Iter(u8).from(yaml),
+    );
     defer line_iter.deinit();
 
     const tokens: []Token = try tokenizer.tokenize(&line_iter);
@@ -928,12 +920,10 @@ test "tokenize folded block, strip style" {
     var arena: ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
 
-    var line_iter: LineIterator = .{
-        .@"test" = .{
-            .allocator = arena.allocator(),
-            .iter = .from(yaml),
-        },
-    };
+    var line_iter: LineIterator = .initTest(
+        arena.allocator(),
+        Iter(u8).from(yaml),
+    );
     defer line_iter.deinit();
 
     const tokens: []Token = try tokenizer.tokenize(&line_iter);
@@ -968,12 +958,10 @@ test "tokenize folded block, keep style" {
     var arena: ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
 
-    var line_iter: LineIterator = .{
-        .@"test" = .{
-            .allocator = arena.allocator(),
-            .iter = .from(yaml),
-        },
-    };
+    var line_iter: LineIterator = .initTest(
+        arena.allocator(),
+        Iter(u8).from(yaml),
+    );
     defer line_iter.deinit();
 
     const tokens: []Token = try tokenizer.tokenize(&line_iter);
@@ -1005,12 +993,10 @@ test "tokenize array" {
     var arena: ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
 
-    var line_iter: LineIterator = .{
-        .@"test" = .{
-            .allocator = arena.allocator(),
-            .iter = .from(yaml),
-        },
-    };
+    var line_iter: LineIterator = .initTest(
+        arena.allocator(),
+        Iter(u8).from(yaml),
+    );
     defer line_iter.deinit();
 
     const tokens: []Token = try tokenizer.tokenize(&line_iter);
@@ -1048,12 +1034,10 @@ test "tokenize obj" {
     var arena: ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
 
-    var line_iter: LineIterator = .{
-        .@"test" = .{
-            .allocator = arena.allocator(),
-            .iter = .from(yaml),
-        },
-    };
+    var line_iter: LineIterator = .initTest(
+        arena.allocator(),
+        Iter(u8).from(yaml),
+    );
     defer line_iter.deinit();
 
     const tokens: []Token = try tokenizer.tokenize(&line_iter);
@@ -1095,12 +1079,10 @@ test "tokenize list of objects" {
     var arena: ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
 
-    var line_iter: LineIterator = .{
-        .@"test" = .{
-            .allocator = arena.allocator(),
-            .iter = .from(yaml),
-        },
-    };
+    var line_iter: LineIterator = .initTest(
+        arena.allocator(),
+        Iter(u8).from(yaml),
+    );
     defer line_iter.deinit();
 
     const tokens: []Token = try tokenizer.tokenize(&line_iter);
