@@ -26,7 +26,7 @@
     .dependencies = .{
         .zul = .{
             .url = "https://github.com/karlseguin/zul/archive/master.tar.gz",
-            .hash = "12203d714a3938eacfb393469afa0ceec935ced7db75f2fb9a1e0fd13f3dfc1ec210",
+            .hash = "1220658b75019b8ed661e35948c3678bf0db913fa34ed0e9a300d66c95493a3409a2",
         },
         // See `zig fetch --save <url>` for a command-line interface for adding dependencies.
         //.example = .{
