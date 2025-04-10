@@ -103,6 +103,7 @@ pub fn build(b: *Build) void {
 
     const parsing_unit_tests: *Compile = b.addTest(.{
         .root_module = parsing,
+        .single_threaded = true,
     });
 
     // https://ziggit.dev/t/zig-debugging-with-lldb/3931/5

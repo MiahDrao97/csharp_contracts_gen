@@ -324,14 +324,11 @@ pub const NodeMap = struct {
         }
         try self.keys_packed.appendSlice(allocator, k);
 
-        self.value_map.put(
+        try self.value_map.put(
             allocator,
             StringHash.from(k),
             Value{ .node = v, .offset = next_idx },
-        ) catch |err| switch (err) {
-            Allocator.Error.OutOfMemory => |oom| return oom,
-            else => unreachable,
-        };
+        );
     }
 
     /// Get a node by its key, if it exists
@@ -418,6 +415,70 @@ pub const NodeMap = struct {
             },
             else => return null,
         }
+    }
+
+    pub fn dumpNodeMap(obj: *const NodeMap) void {
+        if ((@import("builtin").is_test and testing.log_level != .debug) or !std.log.logEnabled(.debug, .parser)) {
+            return;
+        }
+
+        var buf: [8192]u8 = undefined;
+        var stack_alloc: std.heap.FixedBufferAllocator = .init(&buf);
+
+        const ctx = struct {
+            fn innerDump(allocator: Allocator, inner_obj: *const NodeMap, level: u16) Allocator.Error![]const u8 {
+                var str_arr: ArrayList(u8) = .empty;
+                var inner_iter: NodeMap.Iterator = inner_obj.iter();
+                while (inner_iter.next()) |inner_kvp| {
+                    if (level > 0) {
+                        try str_arr.appendNTimes(allocator, ' ', level * 2);
+                    }
+                    try str_arr.appendSlice(allocator, inner_kvp.@"0");
+                    try str_arr.append(allocator, ':');
+                    switch (inner_kvp.@"1".*) {
+                        .obj => |*o| {
+                            try str_arr.append(allocator, '\n');
+                            try str_arr.appendSlice(allocator, try innerDump(allocator, o, level + 1));
+                        },
+                        .value => |v| {
+                            try str_arr.append(allocator, ' ');
+                            try str_arr.appendSlice(allocator, v);
+                        },
+                        .arr => |a| {
+                            try str_arr.append(allocator, '\n');
+                            for (a) |elem| {
+                                try str_arr.appendNTimes(allocator, ' ', (level + 1) * 2);
+                                try str_arr.appendSlice(allocator, "- ");
+                                try str_arr.appendSlice(allocator, try dumpNode(allocator, elem, level + 1));
+                                try str_arr.append(allocator, '\n');
+                            }
+                        }
+                    }
+                    try str_arr.append(allocator, '\n');
+                }
+                return try str_arr.toOwnedSlice(allocator);
+            }
+
+            fn dumpNode(allocator: Allocator, inner_node: Node, level: u16) Allocator.Error![]const u8 {
+                return switch (inner_node) {
+                    .obj => |*o| try innerDump(allocator, o, level + 1),
+                    .value => |v| v,
+                    .arr => |a| blk: {
+                        var str_arr: ArrayList(u8) = .empty;
+                        for (a) |elem| {
+                            try str_arr.appendSlice(allocator, try dumpNode(allocator, elem, level + 1));
+                        }
+                        break :blk try str_arr.toOwnedSlice(allocator);
+                    }
+                };
+            }
+        };
+
+        const result: []const u8 = ctx.innerDump(stack_alloc.allocator(), obj, 0) catch |err| {
+            log.warn("Could not dump node map due to buffer overflow: {s} -> {?}", .{ @errorName(err), @errorReturnTrace() });
+            return;
+        };
+        log.debug("Dumped node map:\n{s}", .{result});
     }
 
     /// Free memory owned by this map
@@ -573,11 +634,10 @@ pub const LineIterator = union(enum) {
 };
 
 test "parse with live file" {
-    return error.SkipZigTest;
-    // testing.log_level = .debug;
-    // const file: []const u8 = "./fixtures/test.yaml";
-    // var parsed: ParsedYml = try parseYaml(testing.allocator, file, .{});
-    // defer parsed.deinit();
+    testing.log_level = .debug;
+    const file: []const u8 = "./fixtures/test.yaml";
+    var parsed: ParsedYml = try parseYaml(testing.allocator, file, .{});
+    defer parsed.deinit();
 
-    // testing.log_level = .info;
+    testing.log_level = .info;
 }

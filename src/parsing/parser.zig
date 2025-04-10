@@ -56,7 +56,7 @@ fn parseObj(
                 tokens.peek() orelse .eof,
                 self.tok_idx,
             });
-            dumpNodeMap(node);
+            node.dumpNodeMap();
             return err;
         };
     }
@@ -70,11 +70,11 @@ fn parseObj(
                     key = s;
                 } else if (expecting_newline_or_eof) {
                     log.err("Expecting newline or EOF, but found string token '{s}' (token[{d}])", .{ s, self.tok_idx });
-                    dumpNodeMap(node);
+                    node.dumpNodeMap();
                     return error.UnexpectedToken;
                 } else if (!colon_found) {
                     log.err("Expecting colon after key, but found string token '{s}' (token[{d}])", .{ s, self.tok_idx });
-                    dumpNodeMap(node);
+                    node.dumpNodeMap();
                     return error.UnexpectedToken;
                 } else {
                     // key-value
@@ -98,7 +98,7 @@ fn parseObj(
                     tok.expectSyntax(&[_]SyntaxToken{.indent}) catch |err| switch (err) {
                         error.UnexpectedToken => {
                             log.err("Expected indent but found <{s}> syntax (token[{d}])", .{ @tagName(syn), self.tok_idx });
-                            dumpNodeMap(node);
+                            node.dumpNodeMap();
                             return err;
                         },
                     };
@@ -109,7 +109,7 @@ fn parseObj(
                             tokens.peek() orelse .eof,
                             self.tok_idx,
                         });
-                        dumpNodeMap(node);
+                        node.dumpNodeMap();
                         return err;
                     };
                     self.tok_idx += indent_depth - 1;
@@ -279,70 +279,6 @@ fn expectIndentLevel(self: *TokenIterator, indents: u16) error{ EOF, UnexpectedT
             return err;
         };
     }
-}
-
-fn dumpNodeMap(obj: *const NodeMap) void {
-    if ((@import("builtin").is_test and testing.log_level != .debug) or !std.log.logEnabled(.debug, .parser)) {
-        return;
-    }
-
-    var buf: [4096]u8 = undefined;
-    var stack_alloc: std.heap.FixedBufferAllocator = .init(&buf);
-
-    const ctx = struct {
-        fn innerDump(allocator: Allocator, inner_obj: *const NodeMap, level: u16) Allocator.Error![]const u8 {
-            var str_arr: ArrayList(u8) = .empty;
-            var inner_iter: NodeMap.Iterator = inner_obj.iter();
-            while (inner_iter.next()) |inner_kvp| {
-                if (level > 0) {
-                    try str_arr.appendNTimes(allocator, ' ', level * 2);
-                }
-                try str_arr.appendSlice(allocator, inner_kvp.@"0");
-                try str_arr.append(allocator, ':');
-                switch (inner_kvp.@"1".*) {
-                    .obj => |*o| {
-                        try str_arr.append(allocator, '\n');
-                        try str_arr.appendSlice(allocator, try innerDump(allocator, o, level + 1));
-                    },
-                    .value => |v| {
-                        try str_arr.append(allocator, ' ');
-                        try str_arr.appendSlice(allocator, v);
-                    },
-                    .arr => |a| {
-                        try str_arr.append(allocator, '\n');
-                        for (a) |elem| {
-                            try str_arr.appendNTimes(allocator, ' ', (level + 1) * 2);
-                            try str_arr.appendSlice(allocator, "- ");
-                            try str_arr.appendSlice(allocator, try dumpNode(allocator, elem, level + 1));
-                            try str_arr.append(allocator, '\n');
-                        }
-                    }
-                }
-                try str_arr.append(allocator, '\n');
-            }
-            return try str_arr.toOwnedSlice(allocator);
-        }
-
-        fn dumpNode(allocator: Allocator, inner_node: Node, level: u16) Allocator.Error![]const u8 {
-            return switch (inner_node) {
-                .obj => |*o| try innerDump(allocator, o, level + 1),
-                .value => |v| v,
-                .arr => |a| blk: {
-                    var str_arr: ArrayList(u8) = .empty;
-                    for (a) |elem| {
-                        try str_arr.appendSlice(allocator, try dumpNode(allocator, elem, level + 1));
-                    }
-                    break :blk try str_arr.toOwnedSlice(allocator);
-                }
-            };
-        }
-    };
-
-    const result: []const u8 = ctx.innerDump(stack_alloc.allocator(), obj, 0) catch |err| {
-        log.warn("Could not dump node map due to buffer overflow: {s} -> {?}", .{ @errorName(err), @errorReturnTrace() });
-        return;
-    };
-    log.debug("Dumped node map:\n{s}", .{result});
 }
 
 test "parse simple object" {

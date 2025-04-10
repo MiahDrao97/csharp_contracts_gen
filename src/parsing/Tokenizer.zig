@@ -5,6 +5,7 @@ const root = @import("root.zig");
 const Iter = iter_z.Iter;
 const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
+const FixedBufferAllocator = std.heap.FixedBufferAllocator;
 const ResetMode = ArenaAllocator.ResetMode;
 const LineIterator = root.LineIterator;
 const ArrayList = std.ArrayListUnmanaged;
@@ -98,7 +99,7 @@ fn dumpTokens(allocator: Allocator, tokens: []Token) Allocator.Error!void {
     }
     var dump: ArrayList(u8) = .empty;
     defer dump.deinit(allocator);
-    try dump.appendSlice(allocator, "Tokens: [ ");
+    try dump.appendSlice(allocator, "\nTokens: [ ");
 
     var first: bool = true;
     var buf: [256]u8 = undefined;
@@ -112,7 +113,7 @@ fn dumpTokens(allocator: Allocator, tokens: []Token) Allocator.Error!void {
     }
     try dump.appendSlice(allocator, " ]");
 
-    std.debug.print("{s}\n", .{dump.items});
+    log.debug("{s}\n", .{dump.items});
 }
 
 /// Various syntax tokens (symbols only, including newlines and indents)
@@ -225,6 +226,16 @@ pub fn tokenize(self: *Tokenizer, iter: *LineIterator) Error![]Token {
     var tokens: ArrayList(Token) = .empty;
     var indent_level: u16 = 0;
     // because we're using an arena, don't worry about errdefer (we'll put that burden on the caller)
+
+    // log tokens
+    errdefer {
+        var buf: [8192]u8 = undefined;
+        var bufAlloc: FixedBufferAllocator = .init(&buf);
+        dumpTokens(bufAlloc.allocator(), tokens.items) catch {
+            // buffer overflow, but we'll print what we got
+            log.debug("{s} .../* Exceeded {d} bytes */... ] \n", .{ buf, buf.len });
+        };
+    }
 
     // zig fmt: off
     while (iter.next() catch |err| {
@@ -400,6 +411,9 @@ fn tokenizeLine(
     var start_escape: bool = false;
     while (iter.next()) |byte| {
         defer self.pos += 1;
+
+        // carriage returns are evil, and we pretend they don't exist
+        if (byte == '\r') continue;
 
         if (first and byte == '\'') {
             quote_type = .single;
@@ -1190,6 +1204,6 @@ test "tokenize with double-quote value" {
 
     try testing.expectEqualStrings("$ref", tokens[0].asString());
     try testing.expectEqualStrings(":", tokens[1].asString());
-    try testing.expectEqualStrings("#/components/models/MyModel", tokens[2].asString()); // single quotes should vanish
+    try testing.expectEqualStrings("#/components/models/MyModel", tokens[2].asString()); // double quotes should vanish
     try testing.expectEqualStrings("<EOF>", tokens[3].asString());
 }
