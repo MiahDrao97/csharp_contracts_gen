@@ -62,8 +62,8 @@
             .hash = "1220c6cd6fb624a6224679134fe8a48b58a2a31f4a1caeea21c1c0b304b6bba66463",
         },
         .iter_z = .{
-            .url = "https://github.com/MiahDrao97/iter_z/archive/main.tar.gz",
-            .hash = "iter_z-0.0.0-nIKkxiDWAQBF53vWzL62a7GJ3BbJUgDB1Vd-I7y8a2PG",
+            .url = "https://github.com/MiahDrao97/iter_z/archive/refs/tags/v0.2.0.tar.gz",
+            .hash = "iter_z-0.2.0-nIKkxko1AgA4rqbkmf7_VaP9feagDRpDDaKpX6uqcldl",
         },
     },
 

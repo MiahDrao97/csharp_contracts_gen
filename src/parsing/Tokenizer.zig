@@ -149,9 +149,11 @@ const ChompStyle = enum {
 /// Which kind of quotes we're dealing with if the value is in quotes (this is relevant for escape sequences)
 const QuoteType = enum { single, double };
 
-fn isNonWhitespace(byte: u8) bool {
-    return !std.ascii.isWhitespace(byte);
-}
+const NonWhitespace = struct {
+    pub fn filter(_: @This(), byte: u8) bool {
+        return !std.ascii.isWhitespace(byte);
+    }
+};
 
 fn isValidKeyChar(byte: u8) bool {
     return std.ascii.isAlphanumeric(byte) or byte == '$' or byte == '_';
@@ -162,22 +164,24 @@ fn isValidKeyChar(byte: u8) bool {
 pub const TokenIterator = struct {
     inner: Iter(Token),
 
-    fn isParsableToken(token: Token) bool {
-        return switch (token) {
-            .eof, .comment => false,
-            else => true,
-        };
-    }
+    const ParsableToken = struct {
+        pub fn filter(_: @This(), token: Token) bool {
+            return switch (token) {
+                .eof, .comment => false,
+                else => true,
+            };
+        }
+    };
 
     /// Next token (excludes EOF and comments)
     pub fn next(self: *TokenIterator) ?Token {
         var moved: usize = 0;
-        return self.inner.filterNext(isParsableToken, &moved);
+        return self.inner.filterNext(ParsableToken{}, &moved);
     }
 
     /// Peek at the next token (excludes EOF and comments)
     pub fn peek(self: *TokenIterator) ?Token {
-        return self.inner.any(isParsableToken);
+        return self.inner.any(ParsableToken{});
     }
 
     /// Expect the next token to be a specific syntax symbol
@@ -345,7 +349,7 @@ fn tokenizeLine(
     var iter: Iter(u8) = .from(line[lh_index..]);
     var moved: usize = 0;
     // consume whitespace after the ':'
-    const next: ?u8 = iter.filterNext(isNonWhitespace, &moved);
+    const next: ?u8 = iter.filterNext(NonWhitespace{}, &moved);
     self.pos += moved;
 
     // this scenario means that we have a "key: \n" situation, which indicates this has to be an object or array
@@ -356,7 +360,7 @@ fn tokenizeLine(
     // is this a multi-line value block or just a single line value?
     switch (next.?) {
         '|' => {
-            const block_tok: ?u8 = iter.filterNext(isNonWhitespace, &moved);
+            const block_tok: ?u8 = iter.filterNext(NonWhitespace{}, &moved);
             log.debug("Encountered block value indicator '|', following by chomp style ({?c})", .{block_tok});
             try dumpTokens(self.arena.allocator(), tokens.items);
             indent_level.* += 1;
@@ -378,7 +382,7 @@ fn tokenizeLine(
             return .{ .block_value = .{ BlockStyle.literal, ChompStyle.clip } };
         },
         '>' => {
-            const block_tok: ?u8 = iter.filterNext(isNonWhitespace, &moved);
+            const block_tok: ?u8 = iter.filterNext(NonWhitespace{}, &moved);
             log.debug("Encountered block value indicator '>', following by chomp style ({?c})", .{block_tok});
             try dumpTokens(self.arena.allocator(), tokens.items);
             indent_level.* += 1;
@@ -474,7 +478,7 @@ fn tokenizeLine(
 
             word = try .initCapacity(self.arena.allocator(), line.len);
 
-            if (iter.filterNext(isNonWhitespace, &moved)) |n| {
+            if (iter.filterNext(NonWhitespace{}, &moved)) |n| {
                 word.append(self.arena.allocator(), n) catch unreachable;
             }
             self.pos += moved;
