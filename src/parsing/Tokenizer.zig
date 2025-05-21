@@ -1,19 +1,5 @@
-const std = @import("std");
-const zul = @import("zul");
-const iter_z = @import("iter_z");
-const root = @import("root.zig");
-const Iter = iter_z.Iter;
-const Allocator = std.mem.Allocator;
-const ArenaAllocator = std.heap.ArenaAllocator;
-const FixedBufferAllocator = std.heap.FixedBufferAllocator;
-const ResetMode = ArenaAllocator.ResetMode;
-const LineIterator = root.LineIterator;
-const ArrayList = std.ArrayListUnmanaged;
-const MultiArrayList = std.MultiArrayList;
-const ParseConfig = root.ParseConfig;
-const testing = std.testing;
-const log = std.log.scoped(.tokenizer);
-const assert = std.debug.assert;
+//! Produces a slice of tokens from a file's contents so that they can be parsed.
+const Tokenizer = @This();
 
 /// Which line number we're on
 line_no: usize = 1,
@@ -23,8 +9,6 @@ pos: usize = 0,
 config: ParseConfig,
 /// Arena allocator
 arena: ArenaAllocator,
-
-pub const Tokenizer = @This();
 
 pub const Error = error{
     InvalidSyntax,
@@ -1211,3 +1195,20 @@ test "tokenize with double-quote value" {
     try testing.expectEqualStrings("#/components/models/MyModel", tokens[2].asString()); // double quotes should vanish
     try testing.expectEqualStrings("<EOF>", tokens[3].asString());
 }
+
+const std = @import("std");
+const zul = @import("zul");
+const iter_z = @import("iter_z");
+const root = @import("root.zig");
+const Iter = iter_z.Iter;
+const Allocator = std.mem.Allocator;
+const ArenaAllocator = std.heap.ArenaAllocator;
+const FixedBufferAllocator = std.heap.FixedBufferAllocator;
+const ResetMode = ArenaAllocator.ResetMode;
+const LineIterator = root.LineIterator;
+const ArrayList = std.ArrayListUnmanaged;
+const MultiArrayList = std.MultiArrayList;
+const ParseConfig = root.ParseConfig;
+const testing = std.testing;
+const assert = std.debug.assert;
+const log = std.log.scoped(.tokenizer);
