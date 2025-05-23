@@ -524,10 +524,10 @@ fn tokenizeLine(
         }
         // remove first and last to kill off the quotes
         const q1: u8 = word.orderedRemove(0); // kill first quote
-        const q2: u8 = word.orderedRemove(@bitCast(idx)); // kill last one
+        const q2: u8 = word.orderedRemove(@bitCast(idx - 1)); // kill last one
         assert(blk: {
             std.testing.expectEqualStrings(&[_]u8{q1}, &[_]u8{q2}) catch {
-                log.err("FATAL: Mismatched quotes in string: " ++ .{q1} ++ "{s}" ++ .{q2}, .{word.items});
+                log.err("FATAL: Mismatched quotes in string: {c}{s}{c}", .{ q1, word.items, q2 });
                 break :blk false;
             };
             break :blk true;
