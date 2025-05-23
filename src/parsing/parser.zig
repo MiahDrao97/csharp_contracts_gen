@@ -1,25 +1,12 @@
-const std = @import("std");
-const root = @import("root.zig");
-const iter_z = @import("iter_z");
-const Tokenizer = @import("Tokenizer.zig");
-const Token = Tokenizer.Token;
-const SyntaxToken = Tokenizer.SyntaxToken;
-const TokenIterator = Tokenizer.TokenIterator;
-const ParsedYml = root.ParsedYml;
-const Node = root.Node;
-const Iter = iter_z.Iter;
-const Allocator = std.mem.Allocator;
-const NodeMap = root.NodeMap;
-const ArrayList = std.ArrayListUnmanaged;
-const testing = std.testing;
-const log = std.log.scoped(.parser);
-
+//! Parser that makes returns a `ParsedYml` from a slice of tokens or an errors if it cannot be parsed.
 const Parser = @This();
 
+/// Current index in the token slice
 tok_idx: usize,
 
+/// Error that could be returned if a valid YAML cannot be parsed
 pub const Error = error{ EOF, UnexpectedToken, InvalidKey } || Allocator.Error;
-
+/// Initial value
 pub const init: Parser = .{ .tok_idx = 0 };
 
 /// Parse tokens, resulting in a `ParsedYml` structure
@@ -357,3 +344,19 @@ test "parse object" {
     try testing.expectEqualStrings("val1", nested_obj.?.asObjPtr().?.get("prop1").?.value);
     try testing.expectEqualStrings("val2", nested_obj.?.asObjPtr().?.get("prop2").?.value);
 }
+
+const std = @import("std");
+const root = @import("root.zig");
+const iter_z = @import("iter_z");
+const Tokenizer = @import("Tokenizer.zig");
+const Token = Tokenizer.Token;
+const SyntaxToken = Tokenizer.SyntaxToken;
+const TokenIterator = Tokenizer.TokenIterator;
+const ParsedYml = root.ParsedYml;
+const Node = root.Node;
+const Iter = iter_z.Iter;
+const Allocator = std.mem.Allocator;
+const NodeMap = root.NodeMap;
+const ArrayList = std.ArrayListUnmanaged;
+const testing = std.testing;
+const log = std.log.scoped(.parser);

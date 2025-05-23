@@ -58,7 +58,12 @@ pub const Token = union(enum) {
         };
     }
 
-    pub fn format(self: Token, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+    pub fn format(
+        self: Token,
+        comptime _: []const u8,
+        _: std.fmt.FormatOptions,
+        writer: anytype,
+    ) !void {
         try writer.print("{s}", .{self.asString()});
     }
 
@@ -328,7 +333,10 @@ fn tokenizeLine(
     // tokenize the key first
     const lh_index: usize = try self.tokenizeKey(tokens, line, indent_level);
     // start reading the value
-    log.debug("Finished reading key-->{s}\n    Now reading value-->{s}", .{ tokens.items[tokens.items.len - 2], line[lh_index..] });
+    log.debug("Finished reading key-->{s}\n    Now reading value-->{s}", .{
+        tokens.items[tokens.items.len - 2],
+        line[lh_index..],
+    });
 
     var iter: Iter(u8) = .from(line[lh_index..]);
     var moved: usize = 0;
@@ -350,8 +358,12 @@ fn tokenizeLine(
             indent_level.* += 1;
             if (block_tok) |tok| {
                 return switch (tok) {
-                    '+' => .{ .block_value = .{ BlockStyle.literal, ChompStyle.keep } },
-                    '-' => .{ .block_value = .{ BlockStyle.literal, ChompStyle.strip } },
+                    '+' => TokenizeLineResult{
+                        .block_value = .{ BlockStyle.literal, ChompStyle.keep },
+                    },
+                    '-' => TokenizeLineResult{
+                        .block_value = .{ BlockStyle.literal, ChompStyle.strip },
+                    },
                     else => blk: {
                         log.err("Enountered invalid character '{c}' following '|': Line {d}, pos {d}\n\t'{s}'", .{
                             block_tok orelse 0,
@@ -363,7 +375,9 @@ fn tokenizeLine(
                     },
                 };
             }
-            return .{ .block_value = .{ BlockStyle.literal, ChompStyle.clip } };
+            return TokenizeLineResult{
+                .block_value = .{ BlockStyle.literal, ChompStyle.clip },
+            };
         },
         '>' => {
             const block_tok: ?u8 = iter.filterNext(NonWhitespace{}, &moved);
@@ -372,8 +386,12 @@ fn tokenizeLine(
             indent_level.* += 1;
             if (block_tok) |tok| {
                 return switch (tok) {
-                    '+' => .{ .block_value = .{ BlockStyle.folded, ChompStyle.keep } },
-                    '-' => .{ .block_value = .{ BlockStyle.folded, ChompStyle.strip } },
+                    '+' => TokenizeLineResult{
+                        .block_value = .{ BlockStyle.folded, ChompStyle.keep },
+                    },
+                    '-' => TokenizeLineResult{
+                        .block_value = .{ BlockStyle.folded, ChompStyle.strip },
+                    },
                     else => blk: {
                         log.err("Enountered invalid character '{c}' following '>': Line {d}, pos {d}\n\t'{s}'", .{
                             block_tok orelse 0,
@@ -385,7 +403,9 @@ fn tokenizeLine(
                     },
                 };
             }
-            return .{ .block_value = .{ BlockStyle.folded, ChompStyle.clip } };
+            return TokenizeLineResult{
+                .block_value = .{ BlockStyle.folded, ChompStyle.clip },
+            };
         },
         // parse normally
         else => iter.scroll(-1),
@@ -474,10 +494,11 @@ fn tokenizeLine(
         word.append(self.arena.allocator(), byte) catch unreachable;
     }
 
+    var idx: isize = @as(isize, @bitCast(word.items.len)) - 1;
     if (quote_type) |q| {
-        var last_char: u8 = word.getLast();
-        if (last_char == '\n') {
-            last_char = word.items[word.items.len - 1];
+        var last_char: u8 = word.items[@bitCast(idx)];
+        while (std.ascii.isWhitespace(last_char) and idx >= 0) : (idx -= 1) {
+            last_char = word.items[@bitCast(idx)];
         }
         switch (q) {
             .single => {
@@ -502,14 +523,20 @@ fn tokenizeLine(
             },
         }
         // remove first and last to kill off the quotes
-        const q1: u8 = word.swapRemove(0); // kills first quotes and swaps with last element (which is the other quote)
-        const q2: u8 = word.orderedRemove(0);
-        assert(q1 == q2);
+        const q1: u8 = word.orderedRemove(0); // kill first quote
+        const q2: u8 = word.orderedRemove(@bitCast(idx)); // kill last one
+        assert(blk: {
+            std.testing.expectEqualStrings(&[_]u8{q1}, &[_]u8{q2}) catch {
+                log.err("FATAL: Mismatched quotes in string: " ++ .{q1} ++ "{s}" ++ .{q2}, .{word.items});
+                break :blk false;
+            };
+            break :blk true;
+        });
     }
 
     log.debug("Appending value-->{s}", .{word.items});
     const parsed: []const u8 = try word.toOwnedSlice(self.arena.allocator());
-    if (parsed[parsed.len - 1] == '\n') {
+    if (line[line.len - 1] == '\n') {
         // Strip off newline and tokenize it instead.
         // If you truly want any newlines, then you need N+1 newlines.
         // Yes, we waste a byte, but that's what the arena is for.

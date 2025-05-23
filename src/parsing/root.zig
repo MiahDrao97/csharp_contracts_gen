@@ -309,7 +309,12 @@ pub const NodeMap = struct {
 
     /// Put a new node (overwrites previous entry if a collision occurs).
     /// Returns `error.InvalidKey` if the key contains any null characters.
-    pub fn put(self: *NodeMap, allocator: Allocator, k: []const u8, v: Node) (error{InvalidKey} || Allocator.Error)!void {
+    pub fn put(
+        self: *NodeMap,
+        allocator: Allocator,
+        k: []const u8,
+        v: Node,
+    ) (error{InvalidKey} || Allocator.Error)!void {
         for (k) |byte| {
             if (byte == 0) {
                 return error.InvalidKey;
@@ -590,29 +595,39 @@ test "Node projectTo()" {
 }
 
 pub const LineIterator = union(enum) {
-    live: zul.fs.LineIterator,
+    live: struct { inner: zul.fs.LineIterator, secondary_buf: [4096]u8 = undefined },
     @"test": struct { allocator: Allocator, iter: Iter(u8) },
 
     pub fn init(iter: zul.fs.LineIterator) LineIterator {
-        return .{ .live = iter };
+        return LineIterator{
+            .live = .{ .inner = iter },
+        };
     }
 
     pub fn initTest(allocator: Allocator, iter: Iter(u8)) LineIterator {
-        return .{
+        return LineIterator{
             .@"test" = .{ .allocator = allocator, .iter = iter },
         };
     }
 
     pub fn deinit(self: *LineIterator) void {
         switch (self.*) {
-            .live => |l| l.deinit(),
+            .live => |l| l.inner.deinit(),
             .@"test" => |*t| t.iter.deinit(),
         }
     }
 
     pub fn next(self: *LineIterator) !?[]const u8 {
         switch (self.*) {
-            .live => |*l| return l.next(),
+            .live => |*l| {
+                const line: ?[]const u8 = try l.inner.next();
+                if (line) |ln| {
+                    @memcpy(self.live.secondary_buf[0..ln.len], ln);
+                    self.live.secondary_buf[ln.len] = '\n';
+                    return self.live.secondary_buf[0 .. ln.len + 1];
+                }
+                return null;
+            },
             .@"test" => |*t| {
                 var line: ArrayList(u8) = .empty;
                 errdefer line.deinit(t.allocator);
