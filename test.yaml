@@ -1,0 +1,177 @@
+asyncapi: 3.0.0
+info:
+  title: NEO
+  version: 1.0.0
+  description: Contract for order intake into PFL's systems
+defaultContentType: application/json
+channels:
+  SubmitOrder:
+    address: order_request
+    messages:
+      OrderRequest:
+        $ref: '#/components/messages/OrderRequest'
+components:
+  messages:
+    OrderRequest:
+      name: OrderRequest
+      title: Send Message
+      summary: This is an order request
+      contentType: application/json
+      bindings:
+        kafka:
+          key:
+            type: string
+            format: uuid
+            description: Represents the Order Request Id
+      payload:
+        $ref: '#/components/schemas/OrderRequest'
+  schemas:
+    OrderRequest:
+      type: object
+      description: Order request object
+      properties:
+        sender:
+          allOf:
+           - $ref: '#/components/schemas/Sender'
+        recipient:
+          $ref: '#/components/schemas/Recipient'
+        orderItems:
+          type: array
+          items:
+            $ref: '#/components/schemas/OrderItem'
+        instanceId:
+          type: string
+          nullable: true
+          description: This is an identifier for a container of orders, whether that be a list upload or campaign/journey run
+          minLength: 10
+          maxLength: 100
+        billingVariables:
+          type: object
+          nullable: true
+          description: This is for passing in billing variables if required
+          additionalProperties:
+            type: string
+            nullable: true
+        partnerOrderReference:
+          type: string
+          description: Pass in an order number that's meaningful to an external system
+          nullable: true
+        statusCallbackUrl:
+          type: string
+          description: Optionally have statuses post back to this webhook
+          nullable: true
+    Address:
+      type: object
+      description: Physical mailing address
+      properties:
+        title:
+          type: string
+          description: title
+          nullable: true
+        nameFirst:
+          type: string
+          description: first name
+          nullable: true
+        nameLast:
+          type: string
+          description: last name
+          nullable: true
+        companyName:
+          type: string
+          description: company name
+          nullable: true
+        address1:
+          type: string
+          description: address line 1
+          nullable: true
+        address2:
+          type: string
+          description: address line 2
+          nullable: true
+        city:
+          type: string
+          description: city
+          nullable: true
+        province:
+          type: string
+          description: province
+          nullable: true
+        postalCode:
+          type: string
+          description: postal code
+          nullable: true
+        countryCode:
+          type: string
+          description: country
+          nullable: true
+        email:
+          type: string
+          description: email address
+          nullable: true
+        phone:
+          type: string
+          description: phone number
+          nullable: true
+    Sender:
+      description: Essentially the return address on a piece of mail
+      allOf:
+        - $ref: '#/components/schemas/Address'
+    Recipient:
+      description: Recipient for this mailing piece
+      allOf:
+        - $ref: '#/components/schemas/Address'
+        - type: object
+          properties:
+            recipientKey:
+              type: string
+              description: Identifier for this recipient, whether than be the line item on an uploaded list or a contact id in a platform
+          required:
+            - address1
+            - city
+            - province
+            - postalCode
+            - recipientKey
+    OrderItem:
+      type: object
+      description: Product we're ordering
+      properties:
+        productId:
+          type: string
+          description: PFL product id
+        quantity:
+          type: number
+          description: Specify a quantity. Generally, products should be set up with a default quantity, and this shouldn't be filled in.
+          nullable: true
+        deliveryMethod:
+          type: string
+          description: Specify a delivery method. Generally, products should be set up with a default delivery method, and this shouldn't be filled in.
+          nullable: true
+        productionSpeedDays:
+          type: string
+          description: Specify a production speed days. Generally, products should be set up with default production speed, and this shouldn't be filled in.
+          nullable: true
+        templateFields:
+          type: object
+          description: Template fields for this order. These are related to what's printed on the final piece, and all templated products have specific templates, so these fields are expected to differ from product to product
+          nullable: true
+          additionalProperties:
+            type: string
+            nullable: true
+      required:
+        - productId
+    WonderfulEnum:
+      type: string
+      description: Only the best enum ever
+      enum:
+        - Amazing
+        - Incredible
+        - MindBlowing
+    MyEnum:
+      type: string
+      description: This is an enum test
+      bit-flag: true
+      enum:
+        - Tall
+        - Hollow
+        - Dark
+        - Square
